@@ -22,6 +22,8 @@ function doGet(e) {
   if (action === "getGRNsForPalletBuild") return getGRNsForPalletBuild();
   if (action === "generatePutawayId") return generatePutawayId();
   if (action === "generateDnId") return generateDnId();
+  if (action === "generatePickId") return generatePickId();
+  if (action === "getPickAssignmentData") return getPickAssignmentData(e.parameter.dnId, e.parameter.skuId);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -43,6 +45,7 @@ function doPost(e) {
   if (action === "submitPutaway") return submitPutaway(data);
   if (action === "submitGrnIssue") return submitGrnIssue(data);
   if (action === "submitDnEntry") return submitDnEntry(data);
+  if (action === "submitPickAssignment") return submitPickAssignment(data);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -581,6 +584,152 @@ function submitDnEntry(data) {
       "",    // Dispatch_Quantity (filled later)
       ""     // Shortage (filled later)
     ]);
+  }
+
+  return jsonResponse({ status: "success" });
+}
+
+// ---- GENERATE PICK ID ----
+function generatePickId() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName("Pick_Assignment_OB_03");
+  if (!sheet) return jsonResponse({ status: "error", message: "Pick_Assignment_OB_03 not found" });
+  const values = sheet.getDataRange().getValues();
+  let maxId = 0;
+  for (let i = 1; i < values.length; i++) {
+    const idStr = String(values[i][1] || ""); // Col B = Pick_ID
+    if (idStr.startsWith("PICK-")) {
+      const num = parseInt(idStr.replace("PICK-", ""), 10);
+      if (!isNaN(num) && num > maxId) maxId = num;
+    }
+  }
+  return jsonResponse({ status: "success", nextId: "PICK-" + String(maxId + 1).padStart(4, "0") });
+}
+
+// ---- GET PICK ASSIGNMENT DATA ----
+function getPickAssignmentData(dnId, skuId) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  // 1. Get all DN IDs with status "Order Created" or "Picklist Generated"
+  const dnSheet = ss.getSheetByName("DN_Entry_OB_01");
+  const dnRows = dnSheet ? dnSheet.getDataRange().getValues() : [];
+  const eligibleDns = [];
+  for (let i = 1; i < dnRows.length; i++) {
+    const status = String(dnRows[i][7] || "").trim();
+    if (status === "Order Created" || status === "Picklist Generated") {
+      eligibleDns.push({ DN_ID: String(dnRows[i][0]).trim(), Customer_Name: String(dnRows[i][1]).trim(), Status: status });
+    }
+  }
+
+  // 2. Get SKUs in the selected DN
+  let dnSkus = [];
+  if (dnId) {
+    const detailSheet = ss.getSheetByName("DN_Detail_OB_02");
+    const detailRows = detailSheet ? detailSheet.getDataRange().getValues() : [];
+    for (let i = 1; i < detailRows.length; i++) {
+      if (String(detailRows[i][0]).trim() === String(dnId).trim()) {
+        dnSkus.push({
+          Line_No: detailRows[i][1],
+          SKU_ID: String(detailRows[i][2]).trim(),
+          SKU_Description: String(detailRows[i][3]).trim(),
+          Order_Quantity: parseFloat(detailRows[i][4]) || 0
+        });
+      }
+    }
+  }
+
+  // 3. Get pallet inventory for the selected SKU
+  let pallets = [];
+  if (skuId) {
+    const invSheet = ss.getSheetByName("Pallet_Inventory_01");
+    const invRows = invSheet ? invSheet.getDataRange().getValues() : [];
+    // Cols: Pallet_ID(0) GRN_ID(1) SKU_ID(2) SKU_Description(3) Batch(4) Mfg_Date(5) Expiry_Date(6)
+    //       Good_Box_Qty(7) Damage_Box_Qty(8) Current_Qty(9) Res_Good(10) Res_Damage(11)
+    //       Free_Good(12) Free_Damage(13) Free_Total(14) Qty_Remaining(15)
+    for (let i = 1; i < invRows.length; i++) {
+      const row = invRows[i];
+      if (String(row[2]).trim() !== String(skuId).trim()) continue;
+      const freeTotal = parseFloat(row[14]) || 0;
+      if (freeTotal <= 0) continue; // skip empty pallets
+      const expiryRaw = row[6];
+      let expiryStr = "";
+      try { expiryStr = expiryRaw ? Utilities.formatDate(new Date(expiryRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expiryStr = String(expiryRaw || ""); }
+      pallets.push({
+        Pallet_ID: String(row[0]).trim(),
+        GRN_ID: String(row[1]).trim(),
+        SKU_ID: String(row[2]).trim(),
+        SKU_Description: String(row[3]).trim(),
+        Batch_Number: String(row[4] || "").trim(),
+        Expiry_Date: expiryStr,
+        Expiry_Raw: expiryRaw ? new Date(expiryRaw).getTime() : 0,
+        Location_ID: "",    // filled below
+        Free_Good_Box_Qty: parseFloat(row[12]) || 0,
+        Free_Damage_Box_Qty: parseFloat(row[13]) || 0,
+        Free_Total_Qty: freeTotal
+      });
+    }
+
+    // Fill Location_ID from Pallet_Status_02
+    const palletStatusSheet = ss.getSheetByName("Pallet_Status_02");
+    if (palletStatusSheet) {
+      const psRows = palletStatusSheet.getDataRange().getValues();
+      const locMap = {};
+      for (let i = 1; i < psRows.length; i++) {
+        locMap[String(psRows[i][0]).trim()] = String(psRows[i][2] || "").trim();
+      }
+      pallets.forEach(p => { p.Location_ID = locMap[p.Pallet_ID] || ""; });
+    }
+
+    // Sort by Expiry FEFO (earliest first)
+    pallets.sort((a, b) => (a.Expiry_Raw || 9999999999999) - (b.Expiry_Raw || 9999999999999));
+  }
+
+  return jsonResponse({ status: "success", eligibleDns, dnSkus, pallets });
+}
+
+// ---- SUBMIT PICK ASSIGNMENT ----
+function submitPickAssignment(data) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName("Pick_Assignment_OB_03");
+  if (!sheet) return jsonResponse({ status: "error", message: "Pick_Assignment_OB_03 not found" });
+
+  const rows = data.rows || [];
+  rows.forEach(r => {
+    sheet.appendRow([
+      r.DN_ID,
+      r.Pick_ID,
+      r.Pallet_ID,
+      r.GRN_ID,
+      r.SKU_ID,
+      r.SKU_Description,
+      r.Expiry_Date,
+      r.Batch_Number,
+      r.Location_ID,
+      r.Free_Good_Box_Qty,
+      r.Free_Damage_Box_Qty,
+      r.Free_Total_Qty,
+      r.Pick_Good_Box_Qty,
+      r.Pick_Damage_Box_Qty,
+      r.Pick_Total_Qty,
+      r.Closing_of_SKU,
+      r.Closing_of_Palet,
+      "Pending",           // pick_item_sent_status
+      r.Is_This_Last_Pallet_For_Pick_Assignment
+    ]);
+  });
+
+  // If allSkusDone flag is set → update DN_Entry_OB_01 Status
+  if (data.allSkusDone && data.DN_ID) {
+    const dnSheet = ss.getSheetByName("DN_Entry_OB_01");
+    if (dnSheet) {
+      const dnVals = dnSheet.getDataRange().getValues();
+      for (let i = 1; i < dnVals.length; i++) {
+        if (String(dnVals[i][0]).trim() === String(data.DN_ID).trim()) {
+          dnSheet.getRange(i + 1, 8).setValue("Picklist Generated");
+          break;
+        }
+      }
+    }
   }
 
   return jsonResponse({ status: "success" });

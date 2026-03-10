@@ -15,10 +15,9 @@ const modules = [
   {
     href: "/outbound/pick-assignment",
     title: "Pick Assignment - OB",
-    description: "Assign DN lines to warehouse pickers. Allocate pallets and locations for each order.",
+    description: "Assign DN lines to inventory pallets using FEFO logic. Enter pick quantities per pallet.",
     icon: "🎯",
     badge: "Step 2",
-    disabled: true,
   },
   {
     href: "/outbound/pick-execution",
