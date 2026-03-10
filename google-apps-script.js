@@ -652,14 +652,18 @@ function getPickAssignmentData(dnId, skuId) {
       const freeTotal = parseFloat(row[14]) || 0;
       if (freeTotal <= 0) continue; // skip empty pallets
       const expiryRaw = row[6];
+      const mfgRaw = row[5];
       let expiryStr = "";
+      let mfgStr = "";
       try { expiryStr = expiryRaw ? Utilities.formatDate(new Date(expiryRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expiryStr = String(expiryRaw || ""); }
+      try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { mfgStr = String(mfgRaw || ""); }
       pallets.push({
         Pallet_ID: String(row[0]).trim(),
         GRN_ID: String(row[1]).trim(),
         SKU_ID: String(row[2]).trim(),
         SKU_Description: String(row[3]).trim(),
         Batch_Number: String(row[4] || "").trim(),
+        Manufacturing_Date: mfgStr,
         Expiry_Date: expiryStr,
         Expiry_Raw: expiryRaw ? new Date(expiryRaw).getTime() : 0,
         Location_ID: "",    // filled below
