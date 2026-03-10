@@ -21,6 +21,7 @@ function doGet(e) {
   if (action === "getArrivedGRNs") return getArrivedGRNs();
   if (action === "getGRNsForPalletBuild") return getGRNsForPalletBuild();
   if (action === "generatePutawayId") return generatePutawayId();
+  if (action === "generateDnId") return generateDnId();
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -41,6 +42,7 @@ function doPost(e) {
   if (action === "submitPalletBuildBulk") return submitPalletBuildBulk(data);
   if (action === "submitPutaway") return submitPutaway(data);
   if (action === "submitGrnIssue") return submitGrnIssue(data);
+  if (action === "submitDnEntry") return submitDnEntry(data);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -518,6 +520,67 @@ function submitGrnIssue(data) {
         break;
       }
     }
+  }
+
+  return jsonResponse({ status: "success" });
+}
+
+// ---- GENERATE DN ID ----
+function generateDnId() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName("DN_Entry_OB_01");
+  if (!sheet) return jsonResponse({ status: "error", message: "DN_Entry_OB_01 not found" });
+
+  const values = sheet.getDataRange().getValues();
+  let maxId = 0;
+  for (let i = 1; i < values.length; i++) {
+    const idStr = String(values[i][0] || "");
+    if (idStr.startsWith("DN-")) {
+      const num = parseInt(idStr.replace("DN-", ""), 10);
+      if (!isNaN(num) && num > maxId) maxId = num;
+    }
+  }
+  const nextId = "DN-" + String(maxId + 1).padStart(4, "0");
+  return jsonResponse({ status: "success", nextId });
+}
+
+// ---- SUBMIT DN ENTRY ----
+function submitDnEntry(data) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  // 1. Write header to DN_Entry_OB_01
+  const dnSheet = ss.getSheetByName("DN_Entry_OB_01");
+  if (!dnSheet) return jsonResponse({ status: "error", message: "DN_Entry_OB_01 not found" });
+
+  const totalQty = (data.lines || []).reduce((sum, l) => sum + (parseFloat(l.Order_Quantity) || 0), 0);
+
+  dnSheet.appendRow([
+    data.DN_ID,
+    data.Customer_Name,
+    data.Order_Time,
+    data.Order_Date,
+    data.Order_Upload || "",
+    totalQty,
+    data.Created_By_Email,
+    "Order Created"
+  ]);
+
+  // 2. Write each SKU line to DN_Detail_OB_02
+  const detailSheet = ss.getSheetByName("DN_Detail_OB_02");
+  if (!detailSheet) return jsonResponse({ status: "error", message: "DN_Detail_OB_02 not found" });
+
+  const lines = data.lines || [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    detailSheet.appendRow([
+      data.DN_ID,
+      line.Line_No,
+      line.SKU_ID,
+      line.SKU_Description || "",
+      line.Order_Quantity || 0,
+      "",    // Dispatch_Quantity (filled later)
+      ""     // Shortage (filled later)
+    ]);
   }
 
   return jsonResponse({ status: "success" });
