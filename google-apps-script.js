@@ -47,6 +47,7 @@ function doPost(e) {
   if (action === "submitGrnIssue") return submitGrnIssue(data);
   if (action === "submitDnEntry") return submitDnEntry(data);
   if (action === "submitPickAssignment") return submitPickAssignment(data);
+  if (action === "generatePicklistPDF") return generatePicklistPDF(data);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -859,6 +860,139 @@ function getPicklistData(dnId) {
   }
 
   return jsonResponse({ status: "success", dnId, customerName, orderDate, dnStatus, rows });
+}
+
+// ---- GENERATE PICKLIST PDF & UPLOAD TO DRIVE ----
+function generatePicklistPDF(data) {
+  var dnId         = String(data.dnId || "");
+  var customerName = String(data.customerName || "");
+  var orderDate    = String(data.orderDate || "");
+  var rows         = data.rows || [];
+  var PICKLIST_FOLDER = "1jEPWXAdsFo0P3ruI_hsxi3qbU3IM2uoc";
+
+  try {
+    // 1. Create a temporary Google Doc
+    var doc  = DocumentApp.create("Picklist-" + dnId + "-TEMP");
+    var body = doc.getBody();
+    body.setMarginTop(28).setMarginBottom(28).setMarginLeft(36).setMarginRight(36);
+
+    // Title
+    var titleStyle = {};
+    titleStyle[DocumentApp.Attribute.BOLD]           = true;
+    titleStyle[DocumentApp.Attribute.FONT_SIZE]      = 16;
+    titleStyle[DocumentApp.Attribute.HORIZONTAL_ALIGNMENT] = DocumentApp.HorizontalAlignment.CENTER;
+    var titleP = body.appendParagraph("PICKLIST \u2013 " + dnId);
+    titleP.setAttributes(titleStyle);
+
+    // Meta line
+    var now = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm");
+    var metaStyle = {};
+    metaStyle[DocumentApp.Attribute.FONT_SIZE]      = 9;
+    metaStyle[DocumentApp.Attribute.HORIZONTAL_ALIGNMENT] = DocumentApp.HorizontalAlignment.CENTER;
+    var metaP = body.appendParagraph(
+      "Customer: " + customerName + "   \u2502   Order Date: " + orderDate + "   \u2502   Generated: " + now
+    );
+    metaP.setAttributes(metaStyle);
+    body.appendParagraph("");
+
+    // 2. Build table data
+    var headers = [
+      "Pick ID","Pallet","GRN","SKU","Description","Batch","Expiry",
+      "Location","Free Good","Free Dmg","Free Total",
+      "Pick Good","Pick Dmg","Pick Total","Closing Pallet","Closing SKU","Last?"
+    ];
+    var tableData = [headers];
+    rows.forEach(function(r) {
+      tableData.push([
+        String(r.Pick_ID        || ""),
+        String(r.Pallet_ID      || ""),
+        String(r.GRN_ID         || ""),
+        String(r.SKU_ID         || ""),
+        String(r.SKU_Description|| ""),
+        String(r.Batch_Number   || ""),
+        String(r.Expiry_Date    || ""),
+        String(r.Location_ID    || ""),
+        String(r.Free_Good_Box_Qty  || 0),
+        String(r.Free_Damage_Box_Qty|| 0),
+        String(r.Free_Total_Qty     || 0),
+        String(r.Pick_Good_Box_Qty  || 0),
+        String(r.Pick_Damage_Box_Qty|| 0),
+        String(r.Pick_Total_Qty     || 0),
+        String(r.Closing_of_Palet   || 0),
+        String(r.Closing_of_SKU     || 0),
+        String(r.Is_Last_Pallet     || "No")
+      ]);
+    });
+
+    var table = body.appendTable(tableData);
+
+    // Style header row: dark bg, white bold text, font 8
+    var hdrRow = table.getRow(0);
+    for (var c = 0; c < headers.length; c++) {
+      var hCell = hdrRow.getCell(c);
+      hCell.setBackgroundColor("#1e293b");
+      hCell.getParagraphs()[0].editAsText()
+        .setBold(true).setFontSize(8).setForegroundColor("#ffffff");
+    }
+    // Style data rows: alternating bg, font 8
+    for (var ri = 1; ri < table.getNumRows(); ri++) {
+      var row = table.getRow(ri);
+      for (var ci = 0; ci < row.getNumCells(); ci++) {
+        row.getCell(ci).getParagraphs()[0].editAsText().setFontSize(8);
+        if (ri % 2 === 0) row.getCell(ci).setBackgroundColor("#f1f5f9");
+      }
+    }
+    // Totals row
+    var totFree = 0, totGood = 0, totDmg = 0, totQty = 0;
+    rows.forEach(function(r) {
+      totFree += Number(r.Free_Total_Qty)      || 0;
+      totGood += Number(r.Pick_Good_Box_Qty)   || 0;
+      totDmg  += Number(r.Pick_Damage_Box_Qty) || 0;
+      totQty  += Number(r.Pick_Total_Qty)      || 0;
+    });
+    var totalsData = [
+      "TOTALS ("+rows.length+" lines)","","","","","","","",
+      "","",String(totFree),String(totGood),String(totDmg),String(totQty),"\u2014","\u2014","\u2014"
+    ];
+    var totRow = table.appendTableRow();
+    totalsData.forEach(function(val) {
+      var tc = totRow.appendTableCell(val);
+      tc.setBackgroundColor("#334155");
+      tc.getParagraphs()[0].editAsText().setBold(true).setFontSize(8).setForegroundColor("#ffffff");
+    });
+
+    // Signature block
+    body.appendParagraph("");
+    var sigHeaders = ["Picker", "Supervisor", "Warehouse Manager"];
+    var sigTable = body.appendTable([["Picker Signature","Supervisor Signature","Warehouse Manager"]]);
+    for (var sc = 0; sc < 3; sc++) {
+      sigTable.getRow(0).getCell(sc).setMinimumHeight(50);
+    }
+
+    doc.saveAndClose();
+
+    // 3. Export Google Doc as PDF blob
+    var docFile = DriveApp.getFileById(doc.getId());
+    var pdfBlob = docFile.getAs(MimeType.PDF);
+    var stamp = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd-MM-yyyy_HHmm");
+    pdfBlob.setName("Picklist-" + dnId + "-" + stamp + ".pdf");
+
+    // 4. Save PDF to target Drive folder
+    var folder  = DriveApp.getFolderById(PICKLIST_FOLDER);
+    var pdfFile = folder.createFile(pdfBlob);
+    pdfFile.setName("Picklist-" + dnId + "-" + stamp + ".pdf");
+    pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    // 5. Delete temp Google Doc
+    docFile.setTrashed(true);
+
+    var fileId  = pdfFile.getId();
+    var viewUrl = "https://drive.google.com/file/d/" + fileId + "/view";
+    return jsonResponse({ status: "success", fileUrl: viewUrl, fileId: fileId });
+
+  } catch (err) {
+    return jsonResponse({ status: "error", message: err.message || String(err) });
+  }
 }
 
 // ---- AUTHORIZE DRIVE (run once to grant Drive permissions) ----

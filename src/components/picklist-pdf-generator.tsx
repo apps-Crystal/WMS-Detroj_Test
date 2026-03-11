@@ -32,11 +32,13 @@ interface PicklistPdfProps {
 export function PicklistPdfGenerator({ completedDNs }: PicklistPdfProps) {
   const [selectedDN, setSelectedDN] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [driveUrl, setDriveUrl] = useState("");
 
   const handlePrint = async () => {
     if (!selectedDN) return setError("Please select a DN.");
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setDriveUrl("");
     try {
       const res = await fetch(`/api/pick-assignment/picklist?dnId=${encodeURIComponent(selectedDN)}`);
       const data = await res.json();
@@ -46,6 +48,27 @@ export function PicklistPdfGenerator({ completedDNs }: PicklistPdfProps) {
       setError(e instanceof Error ? e.message : "Error generating picklist");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUploadToDrive = async () => {
+    if (!selectedDN) return setError("Please select a DN.");
+    setUploading(true); setError(""); setDriveUrl("");
+    try {
+      const res = await fetch("/api/pick-assignment/upload-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dnId: selectedDN }),
+      });
+      const data = await res.json();
+      if (data.status !== "success") throw new Error(data.message || "Failed to upload PDF");
+      setDriveUrl(data.fileUrl);
+      // Open in new tab
+      window.open(data.fileUrl, "_blank");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error uploading to Drive");
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -209,14 +232,24 @@ export function PicklistPdfGenerator({ completedDNs }: PicklistPdfProps) {
           📄 Picklist PDF Generator
         </CardTitle>
       </CardHeader>
-      <CardContent className="pt-4 pb-5">
-        {error && <div className="mb-3 p-3 text-red-700 bg-red-50 border border-red-200 rounded-md text-sm">{error}</div>}
-        <div className="flex flex-wrap items-end gap-4">
+      <CardContent className="pt-4 pb-5 space-y-3">
+        {error && <div className="p-3 text-red-700 bg-red-50 border border-red-200 rounded-md text-sm">{error}</div>}
+        {driveUrl && (
+          <div className="p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-700 flex items-center gap-3">
+            <span>✅ PDF uploaded to Drive!</span>
+            <a href={driveUrl} target="_blank" rel="noopener noreferrer"
+              className="ml-auto font-semibold underline text-green-800 hover:text-green-600 whitespace-nowrap">
+              📂 Open in Drive ↗
+            </a>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5 flex-1 min-w-48">
             <label className="text-sm font-semibold text-muted-foreground">Select DN (Picklist Generated):</label>
             <select
               value={selectedDN}
-              onChange={e => { setSelectedDN(e.target.value); setError(""); }}
+              onChange={e => { setSelectedDN(e.target.value); setError(""); setDriveUrl(""); }}
               className="w-full h-10 px-3 border border-input rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary font-mono"
             >
               <option value="">-- Select DN --</option>
@@ -225,20 +258,32 @@ export function PicklistPdfGenerator({ completedDNs }: PicklistPdfProps) {
               ))}
             </select>
           </div>
+
+          {/* Print button (browser print dialog) */}
           <button
             onClick={handlePrint}
-            disabled={!selectedDN || loading}
-            className="h-10 px-6 text-sm font-semibold bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2 whitespace-nowrap"
+            disabled={!selectedDN || loading || uploading}
+            className="h-10 px-5 text-sm font-semibold bg-slate-700 text-white rounded-md hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center gap-2 whitespace-nowrap"
           >
-            {loading ? (
-              <><span className="animate-spin">⏳</span> Loading...</>
-            ) : (
-              <><span>🖨</span> Print Picklist PDF</>
-            )}
+            {loading ? <><span className="animate-spin inline-block">⏳</span> Loading...</> : <><span>🖨</span> Print / Browser PDF</>}
+          </button>
+
+          {/* Upload to Drive + open in new tab */}
+          <button
+            onClick={handleUploadToDrive}
+            disabled={!selectedDN || loading || uploading}
+            className="h-10 px-5 text-sm font-semibold bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2 whitespace-nowrap"
+          >
+            {uploading
+              ? <><span className="animate-spin inline-block">⏳</span> Uploading to Drive...</>
+              : <><span>☁️</span> Upload to Drive &amp; Open</>}
           </button>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Only DNs with status <strong>&quot;Picklist Generated&quot;</strong> appear here. Opens a print-ready page (landscape A4).
+
+        <p className="text-xs text-muted-foreground">
+          <strong>Print</strong> — opens a browser print window (HTML).{" "}
+          <strong>Upload to Drive</strong> — generates a Google Doc PDF, saves to your Drive folder, and opens in a new tab.
+          Only <strong>&quot;Picklist Generated&quot;</strong> DNs are shown.
         </p>
       </CardContent>
     </Card>
