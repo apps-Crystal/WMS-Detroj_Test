@@ -776,6 +776,31 @@ function submitPickAssignment(data) {
     }
   }
 
+  // ── Update Pallet_Inventory_01: Reserved_Good += Pick_Good, Reserved_Damage += Pick_Damage
+  //    Match by Pallet_ID (col A = index 0) + GRN_ID (col B = index 1) for the exact row
+  const invSheet = ss.getSheetByName("Pallet_Inventory_01");
+  if (invSheet && rows.length > 0) {
+    const invData = invSheet.getDataRange().getValues();
+    rows.forEach(function(r) {
+      const pickGood = parseFloat(r.Pick_Good_Box_Qty) || 0;
+      const pickDmg  = parseFloat(r.Pick_Damage_Box_Qty) || 0;
+      if (pickGood === 0 && pickDmg === 0) return;
+      for (var i = 1; i < invData.length; i++) {
+        var pid = String(invData[i][0] || "").trim();
+        var gid = String(invData[i][1] || "").trim();
+        if (pid === String(r.Pallet_ID || "").trim() && gid === String(r.GRN_ID || "").trim()) {
+          // Col K (1-indexed = 11) = Reserved_Good_Box_Qty  (array index 10)
+          var curResGood = parseFloat(invData[i][10]) || 0;
+          invSheet.getRange(i + 1, 11).setValue(curResGood + pickGood);
+          // Col L (1-indexed = 12) = Reserved_Damage_Box_Qty (array index 11)
+          var curResDmg = parseFloat(invData[i][11]) || 0;
+          invSheet.getRange(i + 1, 12).setValue(curResDmg + pickDmg);
+          break;
+        }
+      }
+    });
+  }
+
   return jsonResponse({ status: "success" });
 }
 
