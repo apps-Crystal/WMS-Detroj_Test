@@ -1,13 +1,20 @@
 import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 export const dynamic = 'force-dynamic';
 const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const res = await fetch(`${APPS_SCRIPT_URL}?action=generatePickId`, { cache: 'no-store', redirect: 'follow' });
+    // Forward dnId so Apps Script counts picks only for this DN
+    const dnId = req.nextUrl.searchParams.get("dnId") || "";
+    const url = dnId
+      ? `${APPS_SCRIPT_URL}?action=generatePickId&dnId=${encodeURIComponent(dnId)}`
+      : `${APPS_SCRIPT_URL}?action=generatePickId`;
+    const res = await fetch(url, { cache: 'no-store', redirect: 'follow' });
     const data = await res.json();
     return NextResponse.json(data);
-  } catch (err: any) {
-    return NextResponse.json({ status: 'error', message: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ status: 'error', message: msg }, { status: 500 });
   }
 }
