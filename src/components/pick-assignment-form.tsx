@@ -118,12 +118,14 @@ export function PickAssignmentForm() {
   const hasAnyFilter = searchPallet || searchGRN || searchBatch || searchMfg || searchExpiry;
   const clearAllFilters = () => { setSearchPallet(""); setSearchGRN(""); setSearchBatch(""); setSearchMfg(""); setSearchExpiry(""); };
 
-  // ── Per-pallet total picks (shared across all rows of same Pallet_ID)
+  // ── Per-pallet total picks AND per-pallet SKU free qty (grouped by Pallet_ID)
   const palletPickTotalMap: Record<string, number> = {};
+  const palletSkuFreeQtyMap: Record<string, number> = {};  // sum of Free_Total_Qty per pallet for THIS SKU
   pallets.forEach(p => {
     const r = pickRows[p._key];
     const t = (r?.Pick_Good_Box_Qty || 0) + (r?.Pick_Damage_Box_Qty || 0);
     palletPickTotalMap[p.Pallet_ID] = (palletPickTotalMap[p.Pallet_ID] || 0) + t;
+    palletSkuFreeQtyMap[p.Pallet_ID] = (palletSkuFreeQtyMap[p.Pallet_ID] || 0) + p.Free_Total_Qty;
   });
 
   // ── Grand totals for footer / summary strip
@@ -132,16 +134,20 @@ export function PickAssignmentForm() {
   const totalPicked = totalPickedGood + totalPickedDamage;
   const orderQty = selectedSKUObj?.Order_Quantity || 0;
 
-  // Total free qty available for this SKU across ALL loaded pallet rows
+  // Total free qty of this SKU across all pallets (for summary strip only)
   const totalSkuFreeQty = pallets.reduce((s, p) => s + p.Free_Total_Qty, 0);
-  // Closing SKU = how much stock of this SKU remains after current picks
-  const closingOfSKU = Math.max(0, totalSkuFreeQty - totalPicked);
   // Remaining to fulfil the order
   const remainingToOrder = Math.max(0, orderQty - totalPicked);
 
-  // ── Closing pallet = Pallet_Total_Qty − all picks from that pallet
+  // ── Closing Pallet = Pallet_Total_Qty (ALL skus on pallet) − all picks from that pallet
   const closingPalletFor = (p: Pallet) =>
     Math.max(0, p.Pallet_Total_Qty - (palletPickTotalMap[p.Pallet_ID] || 0));
+
+  // ── Closing SKU = free qty of THIS SKU on this specific pallet − picks from this pallet
+  //    e.g. P0837 has two rows: Free=10, Free=60  → palletSkuFreeQtyMap[P0837]=70
+  //         picking 10 → closingSkuFor(P0837 row) = 70 − 10 = 60
+  const closingSkuFor = (p: Pallet) =>
+    Math.max(0, (palletSkuFreeQtyMap[p.Pallet_ID] || 0) - (palletPickTotalMap[p.Pallet_ID] || 0));
 
   // ── Auto-mark last picking pallet
   const withLastMarked = (rows: Record<string, PickRow>): Record<string, PickRow> => {
@@ -237,7 +243,7 @@ export function PickAssignmentForm() {
           Pick_Good_Box_Qty: r.Pick_Good_Box_Qty || 0,
           Pick_Damage_Box_Qty: r.Pick_Damage_Box_Qty || 0,
           Pick_Total_Qty: pickTotal,
-          Closing_of_SKU: closingOfSKU,
+          Closing_of_SKU: closingSkuFor(p),
           Closing_of_Palet: closingPalletFor(p),
           SKU_Count_In_Pallet: p.SKU_Count_In_Pallet,
           Is_This_Last_Pallet_For_Pick_Assignment: r.Is_Last ? "Yes" : "No",
@@ -329,7 +335,7 @@ export function PickAssignmentForm() {
                   <span className="ml-auto">Order Qty: <strong className="text-primary">{orderQty}</strong></span>
                   <span>Picked: <strong className={totalPicked >= orderQty ? "text-green-600" : "text-orange-500"}>{totalPicked}</strong></span>
                   <span>To Order: <strong className={remainingToOrder === 0 ? "text-green-600" : "text-red-500"}>{remainingToOrder}</strong></span>
-                  <span>Stock Closing: <strong className={closingOfSKU === 0 ? "text-orange-500" : "text-blue-600"}>{closingOfSKU}</strong></span>
+                  <span>Total Stock: <strong className="text-blue-600">{totalSkuFreeQty}</strong></span>
                 </>
               )}
             </div>
@@ -478,13 +484,19 @@ export function PickAssignmentForm() {
                           {closingPallet}
                           <span className="block text-[10px] text-muted-foreground font-normal">of {p.Pallet_Total_Qty}</span>
                         </td>
-                        {/* Closing SKU — same for every row: total free stock of this SKU minus what's been picked */}
-                        <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${
-                          closingOfSKU === 0 ? "text-orange-500" : "text-blue-600"
-                        }`}>
-                          {closingOfSKU}
-                          <span className="block text-[10px] text-muted-foreground font-normal">of {totalSkuFreeQty}</span>
-                        </td>
+                        {/* Closing SKU = this SKU's free qty on THIS pallet − picks from this pallet */}
+                        {(() => {
+                          const csk = closingSkuFor(p);
+                          const palletSkuTotal = palletSkuFreeQtyMap[p.Pallet_ID] || 0;
+                          return (
+                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${
+                              csk === 0 && palletPickTotalMap[p.Pallet_ID] > 0 ? "text-orange-500" : "text-blue-600"
+                            }`}>
+                              {csk}
+                              <span className="block text-[10px] text-muted-foreground font-normal">of {palletSkuTotal}</span>
+                            </td>
+                          );
+                        })()}
                         {/* SKU count on pallet */}
                         <td className="px-3 py-2.5 text-center font-mono text-xs font-semibold text-purple-700">
                           {p.SKU_Count_In_Pallet}
@@ -506,7 +518,7 @@ export function PickAssignmentForm() {
                     <td className="px-3 py-3 text-right font-mono text-sm text-orange-600">{totalPickedDamage}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm font-bold text-primary">{totalPicked}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm text-muted-foreground">—</td>
-                    <td className={`px-3 py-3 text-right font-mono text-sm font-bold ${closingOfSKU === 0 ? "text-green-600" : "text-amber-600"}`}>{closingOfSKU}</td>
+                    <td className={`px-3 py-3 text-right font-mono text-sm font-bold ${remainingToOrder === 0 ? "text-green-600" : "text-amber-600"}`}>{remainingToOrder}</td>
                     <td></td><td></td>
                   </tr>
                 </tfoot>
