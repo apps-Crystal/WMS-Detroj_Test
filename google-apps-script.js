@@ -820,6 +820,10 @@ function getPalletDetails(palletId) {
   const rows = [];
   for (let i = 1; i < invData.length; i++) {
     if (String(invData[i][0] || "").trim() !== String(palletId).trim()) continue;
+    
+    const curQty = parseFloat(invData[i][9]) || 0;
+    if (curQty <= 0) continue; // Skip rows with 0 Current_Qty
+
     const mfgRaw = invData[i][5], expRaw = invData[i][6];
     let mfgStr = "", expStr = "";
     try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch (e) { mfgStr = String(mfgRaw || ""); }
@@ -833,7 +837,7 @@ function getPalletDetails(palletId) {
       Expiry_Date: expStr,
       Good_Box_Qty: parseFloat(invData[i][7]) || 0,
       Damage_Box_Qty: parseFloat(invData[i][8]) || 0,
-      Current_Qty: parseFloat(invData[i][9]) || 0,
+      Current_Qty: curQty,
       Free_Total_Qty: parseFloat(invData[i][14]) || 0,
     });
   }
