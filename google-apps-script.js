@@ -25,6 +25,7 @@ function doGet(e) {
   if (action === "generatePickId") return generatePickId(e.parameter.dnId);
   if (action === "getPickAssignmentData") return getPickAssignmentData(e.parameter.dnId, e.parameter.skuId);
   if (action === "getPicklistData") return getPicklistData(e.parameter.dnId);
+  if (action === "getPalletDetails") return getPalletDetails(e.parameter.palletId);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -48,6 +49,7 @@ function doPost(e) {
   if (action === "submitDnEntry") return submitDnEntry(data);
   if (action === "submitPickAssignment") return submitPickAssignment(data);
   if (action === "generatePicklistPDF") return generatePicklistPDF(data);
+  if (action === "mergePallets") return mergePallets(data);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
 
@@ -806,6 +808,161 @@ function submitPickAssignment(data) {
   return jsonResponse({ status: "success" });
 }
 
+// ---- GET PALLET DETAILS (inventory rows for one pallet) ----
+function getPalletDetails(palletId) {
+  if (!palletId) return jsonResponse({ status: "error", message: "palletId required" });
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const invSheet = ss.getSheetByName("Pallet_Inventory_01");
+  const stsSheet = ss.getSheetByName("Pallet_Status_02");
+  if (!invSheet) return jsonResponse({ status: "error", message: "Pallet_Inventory_01 not found" });
+
+  const invData = invSheet.getDataRange().getValues();
+  const rows = [];
+  for (let i = 1; i < invData.length; i++) {
+    if (String(invData[i][0] || "").trim() !== String(palletId).trim()) continue;
+    const mfgRaw = invData[i][5], expRaw = invData[i][6];
+    let mfgStr = "", expStr = "";
+    try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { mfgStr = String(mfgRaw || ""); }
+    try { expStr = expRaw ? Utilities.formatDate(new Date(expRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expStr = String(expRaw || ""); }
+    rows.push({
+      GRN_ID:           String(invData[i][1] || ""),
+      SKU_ID:           String(invData[i][2] || ""),
+      SKU_Description:  String(invData[i][3] || ""),
+      Batch_Number:     String(invData[i][4] || ""),
+      Manufacturing_Date: mfgStr,
+      Expiry_Date:      expStr,
+      Good_Box_Qty:     parseFloat(invData[i][7])  || 0,
+      Damage_Box_Qty:   parseFloat(invData[i][8])  || 0,
+      Current_Qty:      parseFloat(invData[i][9])  || 0,
+      Free_Total_Qty:   parseFloat(invData[i][14]) || 0,
+    });
+  }
+
+  // Pallet status
+  let location = "", occupancy = "", assignment = "";
+  if (stsSheet) {
+    const stsData = stsSheet.getDataRange().getValues();
+    for (let i = 1; i < stsData.length; i++) {
+      if (String(stsData[i][0] || "").trim() === String(palletId).trim()) {
+        occupancy  = String(stsData[i][1] || "");
+        location   = String(stsData[i][2] || "");
+        assignment = String(stsData[i][3] || "");
+        break;
+      }
+    }
+  }
+
+  return jsonResponse({ status: "success", palletId, rows, location, occupancy, assignment });
+}
+
+// ---- MERGE PALLETS ----
+// mergePallet: moves all inventory rows from sourcePalletId into destinationPalletId
+function mergePallets(data) {
+  const srcId = String(data.sourcePalletId || "").trim();
+  const dstId = String(data.destinationPalletId || "").trim();
+  if (!srcId || !dstId) return jsonResponse({ status: "error", message: "Both sourcePalletId and destinationPalletId are required" });
+  if (srcId === dstId) return jsonResponse({ status: "error", message: "Source and destination pallets must be different" });
+
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const invSheet = ss.getSheetByName("Pallet_Inventory_01");
+  const stsSheet = ss.getSheetByName("Pallet_Status_02");
+  if (!invSheet) return jsonResponse({ status: "error", message: "Pallet_Inventory_01 not found" });
+
+  try {
+    // ── STEP 1: Read all inventory rows for source and destination
+    const invData = invSheet.getDataRange().getValues();
+    // {rowIdx (0-based), data[]}
+    const srcRows = [], dstRows = [];
+    for (let i = 1; i < invData.length; i++) {
+      const pid = String(invData[i][0] || "").trim();
+      if (pid === srcId) srcRows.push({ rowIdx: i, data: invData[i].slice() });
+      if (pid === dstId) dstRows.push({ rowIdx: i, data: invData[i].slice() });
+    }
+    if (srcRows.length === 0) return jsonResponse({ status: "error", message: "Source pallet '" + srcId + "' has no inventory rows" });
+
+    const log = [];
+    // Make a mutable copy of dstRows for in-loop matching
+    const activeDst = dstRows.slice();
+
+    // ── STEP 2 & 3: For each source row, match or create in destination
+    srcRows.forEach(function(src) {
+      // Match key: GRN_ID(1), SKU_ID(2), SKU_Description(3), Batch_Number(4), Mfg_Date(5), Expiry_Date(6)
+      const keyOf = function(row) {
+        return [row[1],row[2],row[3],row[4],String(row[5]),String(row[6])].map(function(v){return String(v||'').trim();}).join('||');
+      };
+      const srcKey = keyOf(src.data);
+      let matched = null;
+      for (let d = 0; d < activeDst.length; d++) {
+        if (keyOf(activeDst[d].data) === srcKey) { matched = activeDst[d]; break; }
+      }
+
+      if (matched) {
+        // ── STEP 2: Matching SKU → add quantities into destination row
+        const newGood    = (parseFloat(matched.data[7]) || 0) + (parseFloat(src.data[7]) || 0);
+        const newDamage  = (parseFloat(matched.data[8]) || 0) + (parseFloat(src.data[8]) || 0);
+        const newCurrent = (parseFloat(matched.data[9]) || 0) + (parseFloat(src.data[9]) || 0);
+        invSheet.getRange(matched.rowIdx + 1, 8).setValue(newGood);    // Good_Box_Qty
+        invSheet.getRange(matched.rowIdx + 1, 9).setValue(newDamage);  // Damage_Box_Qty
+        invSheet.getRange(matched.rowIdx + 1, 10).setValue(newCurrent);// Current_Qty
+        // Also recalculate Free_Good, Free_Damage, Free_Total (col 13,14,15 = 1-indexed)
+        const resGood = parseFloat(matched.data[10]) || 0;
+        const resDmg  = parseFloat(matched.data[11]) || 0;
+        invSheet.getRange(matched.rowIdx + 1, 13).setValue(Math.max(0, newGood   - resGood));
+        invSheet.getRange(matched.rowIdx + 1, 14).setValue(Math.max(0, newDamage - resDmg));
+        invSheet.getRange(matched.rowIdx + 1, 15).setValue(Math.max(0, newGood - resGood) + Math.max(0, newDamage - resDmg));
+        // Update in-memory so further matches in this loop are correct
+        matched.data[7] = newGood; matched.data[8] = newDamage; matched.data[9] = newCurrent;
+        log.push("Merged SKU " + src.data[2] + " (Good:+" + src.data[7] + ", Dmg:+" + src.data[8] + ") into " + dstId);
+      } else {
+        // ── STEP 3: No matching SKU → create new row in destination
+        var newRow = src.data.slice();
+        newRow[0] = dstId; // Change Pallet_ID to destination
+        invSheet.appendRow(newRow);
+        // Add to activeDst so it can be matched by subsequent source rows if needed
+        activeDst.push({ rowIdx: -1, data: newRow }); // rowIdx -1 = newly added, skip deletion safety
+        log.push("Added new SKU row " + src.data[2] + " to " + dstId);
+      }
+    });
+
+    // ── STEP 4: Delete source rows in reverse order to preserve sheet indices
+    const srcIndices = srcRows.map(function(r) { return r.rowIdx; }).sort(function(a,b){return b-a;});
+    srcIndices.forEach(function(ri) {
+      invSheet.deleteRow(ri + 1); // convert 0-based to 1-based sheet row
+      log.push("Deleted source row " + (ri+1) + " from Pallet_Inventory_01");
+    });
+
+    // ── STEP 5: Check if source pallet has any remaining rows
+    const refreshed = invSheet.getDataRange().getValues();
+    let srcStillHasRows = false;
+    for (let i = 1; i < refreshed.length; i++) {
+      if (String(refreshed[i][0] || "").trim() === srcId) { srcStillHasRows = true; break; }
+    }
+
+    if (!srcStillHasRows && stsSheet) {
+      const stsData = stsSheet.getDataRange().getValues();
+      for (let i = 1; i < stsData.length; i++) {
+        if (String(stsData[i][0] || "").trim() === srcId) {
+          stsSheet.getRange(i + 1, 2).setValue("\u274C Unoccupied"); // Occupancy_Status col B
+          stsSheet.getRange(i + 1, 3).setValue("");                  // Location_ID col C
+          stsSheet.getRange(i + 1, 4).setValue("");                  // Assignment_Status col D
+          log.push("Source pallet " + srcId + " marked as Unoccupied in Pallet_Status_02");
+          break;
+        }
+      }
+    }
+
+    return jsonResponse({
+      status: "success",
+      message: "Pallet " + srcId + " successfully merged into " + dstId,
+      mergedRows: srcRows.length,
+      log: log
+    });
+
+  } catch(err) {
+    return jsonResponse({ status: "error", message: err.message || String(err) });
+  }
+}
+
 // ---- GET PICKLIST DATA (for PDF generation) ----
 function getPicklistData(dnId) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -818,8 +975,8 @@ function getPicklistData(dnId) {
     for (let i = 1; i < dnRows.length; i++) {
       if (String(dnRows[i][0]).trim() === String(dnId).trim()) {
         customerName = String(dnRows[i][1] || "").trim();
-        orderDate    = dnRows[i][3] ? Utilities.formatDate(new Date(dnRows[i][3]), "Asia/Kolkata", "dd/MM/yyyy") : "";
-        dnStatus     = String(dnRows[i][7] || "").trim();
+        orderDate = dnRows[i][3] ? Utilities.formatDate(new Date(dnRows[i][3]), "Asia/Kolkata", "dd/MM/yyyy") : "";
+        dnStatus = String(dnRows[i][7] || "").trim();
         break;
       }
     }
@@ -838,24 +995,24 @@ function getPicklistData(dnId) {
   for (let i = 1; i < values.length; i++) {
     if (String(values[i][0]).trim() !== String(dnId).trim()) continue;
     rows.push({
-      Pick_ID:          String(values[i][1] || ""),
-      Pallet_ID:        String(values[i][2] || ""),
-      GRN_ID:           String(values[i][3] || ""),
-      SKU_ID:           String(values[i][4] || ""),
-      SKU_Description:  String(values[i][5] || ""),
-      Expiry_Date:      String(values[i][6] || ""),
-      Batch_Number:     String(values[i][7] || ""),
-      Location_ID:      String(values[i][8] || ""),
-      Free_Good_Box_Qty:    parseFloat(values[i][9])  || 0,
-      Free_Damage_Box_Qty:  parseFloat(values[i][10]) || 0,
-      Free_Total_Qty:       parseFloat(values[i][11]) || 0,
-      Pick_Good_Box_Qty:    parseFloat(values[i][12]) || 0,
-      Pick_Damage_Box_Qty:  parseFloat(values[i][13]) || 0,
-      Pick_Total_Qty:       parseFloat(values[i][14]) || 0,
-      Closing_of_SKU:       parseFloat(values[i][15]) || 0,
-      Closing_of_Palet:     parseFloat(values[i][16]) || 0,
-      Status:           String(values[i][17] || "Pending"),
-      Is_Last_Pallet:   String(values[i][18] || "No"),
+      Pick_ID: String(values[i][1] || ""),
+      Pallet_ID: String(values[i][2] || ""),
+      GRN_ID: String(values[i][3] || ""),
+      SKU_ID: String(values[i][4] || ""),
+      SKU_Description: String(values[i][5] || ""),
+      Expiry_Date: String(values[i][6] || ""),
+      Batch_Number: String(values[i][7] || ""),
+      Location_ID: String(values[i][8] || ""),
+      Free_Good_Box_Qty: parseFloat(values[i][9]) || 0,
+      Free_Damage_Box_Qty: parseFloat(values[i][10]) || 0,
+      Free_Total_Qty: parseFloat(values[i][11]) || 0,
+      Pick_Good_Box_Qty: parseFloat(values[i][12]) || 0,
+      Pick_Damage_Box_Qty: parseFloat(values[i][13]) || 0,
+      Pick_Total_Qty: parseFloat(values[i][14]) || 0,
+      Closing_of_SKU: parseFloat(values[i][15]) || 0,
+      Closing_of_Palet: parseFloat(values[i][16]) || 0,
+      Status: String(values[i][17] || "Pending"),
+      Is_Last_Pallet: String(values[i][18] || "No"),
     });
   }
 
@@ -864,22 +1021,22 @@ function getPicklistData(dnId) {
 
 // ---- GENERATE PICKLIST PDF & UPLOAD TO DRIVE ----
 function generatePicklistPDF(data) {
-  var dnId         = String(data.dnId || "");
+  var dnId = String(data.dnId || "");
   var customerName = String(data.customerName || "");
-  var orderDate    = String(data.orderDate || "");
-  var rows         = data.rows || [];
+  var orderDate = String(data.orderDate || "");
+  var rows = data.rows || [];
   var PICKLIST_FOLDER = "1jEPWXAdsFo0P3ruI_hsxi3qbU3IM2uoc";
 
   try {
     // 1. Create a temporary Google Doc
-    var doc  = DocumentApp.create("Picklist-" + dnId + "-TEMP");
+    var doc = DocumentApp.create("Picklist-" + dnId + "-TEMP");
     var body = doc.getBody();
     body.setMarginTop(28).setMarginBottom(28).setMarginLeft(36).setMarginRight(36);
 
     // Title
     var titleStyle = {};
-    titleStyle[DocumentApp.Attribute.BOLD]           = true;
-    titleStyle[DocumentApp.Attribute.FONT_SIZE]      = 16;
+    titleStyle[DocumentApp.Attribute.BOLD] = true;
+    titleStyle[DocumentApp.Attribute.FONT_SIZE] = 16;
     titleStyle[DocumentApp.Attribute.HORIZONTAL_ALIGNMENT] = DocumentApp.HorizontalAlignment.CENTER;
     var titleP = body.appendParagraph("PICKLIST \u2013 " + dnId);
     titleP.setAttributes(titleStyle);
@@ -887,7 +1044,7 @@ function generatePicklistPDF(data) {
     // Meta line
     var now = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm");
     var metaStyle = {};
-    metaStyle[DocumentApp.Attribute.FONT_SIZE]      = 9;
+    metaStyle[DocumentApp.Attribute.FONT_SIZE] = 9;
     metaStyle[DocumentApp.Attribute.HORIZONTAL_ALIGNMENT] = DocumentApp.HorizontalAlignment.CENTER;
     var metaP = body.appendParagraph(
       "Customer: " + customerName + "   \u2502   Order Date: " + orderDate + "   \u2502   Generated: " + now
@@ -897,30 +1054,30 @@ function generatePicklistPDF(data) {
 
     // 2. Build table data
     var headers = [
-      "Pick ID","Pallet","GRN","SKU","Description","Batch","Expiry",
-      "Location","Free Good","Free Dmg","Free Total",
-      "Pick Good","Pick Dmg","Pick Total","Closing Pallet","Closing SKU","Last?"
+      "Pick ID", "Pallet", "GRN", "SKU", "Description", "Batch", "Expiry",
+      "Location", "Free Good", "Free Dmg", "Free Total",
+      "Pick Good", "Pick Dmg", "Pick Total", "Closing Pallet", "Closing SKU", "Last?"
     ];
     var tableData = [headers];
-    rows.forEach(function(r) {
+    rows.forEach(function (r) {
       tableData.push([
-        String(r.Pick_ID        || ""),
-        String(r.Pallet_ID      || ""),
-        String(r.GRN_ID         || ""),
-        String(r.SKU_ID         || ""),
-        String(r.SKU_Description|| ""),
-        String(r.Batch_Number   || ""),
-        String(r.Expiry_Date    || ""),
-        String(r.Location_ID    || ""),
-        String(r.Free_Good_Box_Qty  || 0),
-        String(r.Free_Damage_Box_Qty|| 0),
-        String(r.Free_Total_Qty     || 0),
-        String(r.Pick_Good_Box_Qty  || 0),
-        String(r.Pick_Damage_Box_Qty|| 0),
-        String(r.Pick_Total_Qty     || 0),
-        String(r.Closing_of_Palet   || 0),
-        String(r.Closing_of_SKU     || 0),
-        String(r.Is_Last_Pallet     || "No")
+        String(r.Pick_ID || ""),
+        String(r.Pallet_ID || ""),
+        String(r.GRN_ID || ""),
+        String(r.SKU_ID || ""),
+        String(r.SKU_Description || ""),
+        String(r.Batch_Number || ""),
+        String(r.Expiry_Date || ""),
+        String(r.Location_ID || ""),
+        String(r.Free_Good_Box_Qty || 0),
+        String(r.Free_Damage_Box_Qty || 0),
+        String(r.Free_Total_Qty || 0),
+        String(r.Pick_Good_Box_Qty || 0),
+        String(r.Pick_Damage_Box_Qty || 0),
+        String(r.Pick_Total_Qty || 0),
+        String(r.Closing_of_Palet || 0),
+        String(r.Closing_of_SKU || 0),
+        String(r.Is_Last_Pallet || "No")
       ]);
     });
 
@@ -944,18 +1101,18 @@ function generatePicklistPDF(data) {
     }
     // Totals row
     var totFree = 0, totGood = 0, totDmg = 0, totQty = 0;
-    rows.forEach(function(r) {
-      totFree += Number(r.Free_Total_Qty)      || 0;
-      totGood += Number(r.Pick_Good_Box_Qty)   || 0;
-      totDmg  += Number(r.Pick_Damage_Box_Qty) || 0;
-      totQty  += Number(r.Pick_Total_Qty)      || 0;
+    rows.forEach(function (r) {
+      totFree += Number(r.Free_Total_Qty) || 0;
+      totGood += Number(r.Pick_Good_Box_Qty) || 0;
+      totDmg += Number(r.Pick_Damage_Box_Qty) || 0;
+      totQty += Number(r.Pick_Total_Qty) || 0;
     });
     var totalsData = [
-      "TOTALS ("+rows.length+" lines)","","","","","","","",
-      "","",String(totFree),String(totGood),String(totDmg),String(totQty),"\u2014","\u2014","\u2014"
+      "TOTALS (" + rows.length + " lines)", "", "", "", "", "", "", "",
+      "", "", String(totFree), String(totGood), String(totDmg), String(totQty), "\u2014", "\u2014", "\u2014"
     ];
     var totRow = table.appendTableRow();
-    totalsData.forEach(function(val) {
+    totalsData.forEach(function (val) {
       var tc = totRow.appendTableCell(val);
       tc.setBackgroundColor("#334155");
       tc.getParagraphs()[0].editAsText().setBold(true).setFontSize(8).setForegroundColor("#ffffff");
@@ -964,7 +1121,7 @@ function generatePicklistPDF(data) {
     // Signature block
     body.appendParagraph("");
     var sigHeaders = ["Picker", "Supervisor", "Warehouse Manager"];
-    var sigTable = body.appendTable([["Picker Signature","Supervisor Signature","Warehouse Manager"]]);
+    var sigTable = body.appendTable([["Picker Signature", "Supervisor Signature", "Warehouse Manager"]]);
     for (var sc = 0; sc < 3; sc++) {
       sigTable.getRow(0).getCell(sc).setMinimumHeight(50);
     }
@@ -978,7 +1135,7 @@ function generatePicklistPDF(data) {
     pdfBlob.setName("Picklist-" + dnId + "-" + stamp + ".pdf");
 
     // 4. Save PDF to target Drive folder
-    var folder  = DriveApp.getFolderById(PICKLIST_FOLDER);
+    var folder = DriveApp.getFolderById(PICKLIST_FOLDER);
     var pdfFile = folder.createFile(pdfBlob);
     pdfFile.setName("Picklist-" + dnId + "-" + stamp + ".pdf");
     pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -986,7 +1143,7 @@ function generatePicklistPDF(data) {
     // 5. Delete temp Google Doc
     docFile.setTrashed(true);
 
-    var fileId  = pdfFile.getId();
+    var fileId = pdfFile.getId();
     var viewUrl = "https://drive.google.com/file/d/" + fileId + "/view";
     return jsonResponse({ status: "success", fileUrl: viewUrl, fileId: fileId });
 

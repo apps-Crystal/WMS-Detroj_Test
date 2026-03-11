@@ -54,6 +54,13 @@ const modules = [
     icon: "✅",
     badge: "Step 6",
   },
+  {
+    href: "/inbound/pallet-merge",
+    title: "Pallet Merge - IB",
+    description: "Consolidate inventory from one pallet into another.",
+    icon: "🔀",
+    badge: "Utility",
+  },
 ];
 
 export default function InboundPage() {
