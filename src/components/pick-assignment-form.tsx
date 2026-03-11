@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PicklistPdfGenerator } from "@/components/picklist-pdf-generator";
 
 /* ── Types ─────────────────────────────────────────────────── */
 interface DN { DN_ID: string; Customer_Name: string; Status: string; }
@@ -574,6 +575,11 @@ export function PickAssignmentForm() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── Picklist PDF Generator ───────────────────────── */}
+      <PicklistPdfGenerator
+        completedDNs={dns.filter(d => d.Status === "Picklist Generated")}
+      />
     </div>
   );
 }
