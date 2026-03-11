@@ -71,15 +71,28 @@ export function PickAssignmentForm() {
     });
   }, []);
 
+  // Helper to refresh pick ID for current (or given) DN
+  const refreshPickId = (dnId: string) => {
+    const param = dnId ? `?dnId=${encodeURIComponent(dnId)}` : "";
+    fetch(`/api/pick-assignment/generate-id${param}`).then(r => r.json()).then(d => {
+      if (d.nextNum) setPickIdBaseNum(d.nextNum);
+    });
+  };
+
   // ── When DN changes
   useEffect(() => {
     setSelectedSKU(""); setSelectedSKUObj(null); setPallets([]); setPickRows({});
-    setDnSkus([]); setSearchPallet(""); setSearchGRN("");
+    setDnSkus([]); setSearchPallet(""); setSearchGRN(""); setSearchBatch(""); setSearchMfg(""); setSearchExpiry("");
     if (!selectedDN) return;
     setLoading(true);
-    fetch(`/api/pick-assignment/data?dnId=${encodeURIComponent(selectedDN)}`).then(r => r.json()).then(d => {
+    // Fetch SKUs and per-DN pick ID in parallel
+    Promise.all([
+      fetch(`/api/pick-assignment/data?dnId=${encodeURIComponent(selectedDN)}`).then(r => r.json()),
+    ]).then(([d]) => {
       setDnSkus(d.dnSkus || []);
     }).finally(() => setLoading(false));
+    refreshPickId(selectedDN);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDN]);
 
   // ── When SKU changes: load pallets
@@ -229,7 +242,8 @@ export function PickAssignmentForm() {
         const pickTotal = (r.Pick_Good_Box_Qty || 0) + (r.Pick_Damage_Box_Qty || 0);
         return {
           DN_ID: selectedDN,
-          Pick_ID: `${selectedDN}-PICK ${baseNum + idx}`,
+          // Zero-pad to 2 digits: DN-0046-PICK 01, DN-0046-PICK 02 ...
+          Pick_ID: `${selectedDN}-PICK ${String(baseNum + idx).padStart(2, "0")}`,
           Pallet_ID: p.Pallet_ID,
           GRN_ID: p.GRN_ID,
           SKU_ID: p.SKU_ID,
@@ -262,7 +276,7 @@ export function PickAssignmentForm() {
       setSuccessMsg(`✅ ${rows.length} pallets assigned for ${selectedSKU}${allSkusDone ? " — DN Status: Picklist Generated!" : ""}`);
       setSelectedSKU(""); setSelectedSKUObj(null); setPallets([]); setPickRows({});
       setSearchPallet(""); setSearchGRN("");
-      fetch("/api/pick-assignment/generate-id").then(r => r.json()).then(d => d.nextNum && setPickIdBaseNum(d.nextNum));
+      refreshPickId(selectedDN);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "An error occurred");
     } finally {

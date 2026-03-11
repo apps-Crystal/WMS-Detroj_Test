@@ -22,7 +22,7 @@ function doGet(e) {
   if (action === "getGRNsForPalletBuild") return getGRNsForPalletBuild();
   if (action === "generatePutawayId") return generatePutawayId();
   if (action === "generateDnId") return generateDnId();
-  if (action === "generatePickId") return generatePickId();
+  if (action === "generatePickId") return generatePickId(e.parameter.dnId);
   if (action === "getPickAssignmentData") return getPickAssignmentData(e.parameter.dnId, e.parameter.skuId);
   return jsonResponse({ status: "error", message: "Unknown action" });
 }
@@ -590,16 +590,19 @@ function submitDnEntry(data) {
 }
 
 // ---- GENERATE PICK ID ----
-function generatePickId() {
+// Returns the next per-DN pick sequence number
+function generatePickId(dnId) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName("Pick_Assignment_OB_03");
   if (!sheet) return jsonResponse({ status: "error", message: "Pick_Assignment_OB_03 not found" });
   const values = sheet.getDataRange().getValues();
   let maxNum = 0;
   for (let i = 1; i < values.length; i++) {
+    // Only count rows for this DN (col A = DN_ID)
+    if (dnId && String(values[i][0]).trim() !== String(dnId).trim()) continue;
     const idStr = String(values[i][1] || "").trim(); // Col B = Pick_ID
-    // New format: DN-0046-PICK 33  → extract trailing number
-    const newFmt = idStr.match(/-PICK\s+(\d+)$/i);
+    // New format: DN-0046-PICK 03  → extract trailing number
+    const newFmt = idStr.match(/-PICK\s*(\d+)$/i);
     if (newFmt) {
       const n = parseInt(newFmt[1], 10);
       if (!isNaN(n) && n > maxNum) maxNum = n;
@@ -611,7 +614,6 @@ function generatePickId() {
       if (!isNaN(n) && n > maxNum) maxNum = n;
     }
   }
-  // Return just the next integer — frontend will prefix with DN_ID
   return jsonResponse({ status: "success", nextNum: maxNum + 1 });
 }
 
