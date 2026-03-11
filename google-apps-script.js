@@ -595,15 +595,24 @@ function generatePickId() {
   const sheet = ss.getSheetByName("Pick_Assignment_OB_03");
   if (!sheet) return jsonResponse({ status: "error", message: "Pick_Assignment_OB_03 not found" });
   const values = sheet.getDataRange().getValues();
-  let maxId = 0;
+  let maxNum = 0;
   for (let i = 1; i < values.length; i++) {
-    const idStr = String(values[i][1] || ""); // Col B = Pick_ID
+    const idStr = String(values[i][1] || "").trim(); // Col B = Pick_ID
+    // New format: DN-0046-PICK 33  → extract trailing number
+    const newFmt = idStr.match(/-PICK\s+(\d+)$/i);
+    if (newFmt) {
+      const n = parseInt(newFmt[1], 10);
+      if (!isNaN(n) && n > maxNum) maxNum = n;
+      continue;
+    }
+    // Old format: PICK-0001
     if (idStr.startsWith("PICK-")) {
-      const num = parseInt(idStr.replace("PICK-", ""), 10);
-      if (!isNaN(num) && num > maxId) maxId = num;
+      const n = parseInt(idStr.replace("PICK-", ""), 10);
+      if (!isNaN(n) && n > maxNum) maxNum = n;
     }
   }
-  return jsonResponse({ status: "success", nextId: "PICK-" + String(maxId + 1).padStart(4, "0") });
+  // Return just the next integer — frontend will prefix with DN_ID
+  return jsonResponse({ status: "success", nextNum: maxNum + 1 });
 }
 
 // ---- GET PICK ASSIGNMENT DATA ----

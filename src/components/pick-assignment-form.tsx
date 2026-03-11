@@ -54,7 +54,7 @@ export function PickAssignmentForm() {
   // keyed by _key (unique row key)
   const [pickRows, setPickRows] = useState<Record<string, PickRow>>({});
 
-  const [pickIdBase, setPickIdBase] = useState("PICK-0001");
+  const [pickIdBaseNum, setPickIdBaseNum] = useState(1);  // next global pick sequence number
   const [loading, setLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
@@ -67,7 +67,7 @@ export function PickAssignmentForm() {
       if (d.eligibleDns) setDns(d.eligibleDns);
     });
     fetch("/api/pick-assignment/generate-id").then(r => r.json()).then(d => {
-      if (d.nextId) setPickIdBase(d.nextId);
+      if (d.nextNum) setPickIdBaseNum(d.nextNum);
     });
   }, []);
 
@@ -219,7 +219,7 @@ export function PickAssignmentForm() {
 
     setIsSubmitting(true); setSuccessMsg(""); setErrorMsg("");
     try {
-      const baseNum = parseInt(pickIdBase.replace("PICK-", ""), 10) || 1;
+      const baseNum = pickIdBaseNum;
       const newlyCompleted = new Set(completedSKUs);
       newlyCompleted.add(selectedSKU);
       const allSkusDone = dnSkus.every(s => newlyCompleted.has(s.SKU_ID));
@@ -229,7 +229,7 @@ export function PickAssignmentForm() {
         const pickTotal = (r.Pick_Good_Box_Qty || 0) + (r.Pick_Damage_Box_Qty || 0);
         return {
           DN_ID: selectedDN,
-          Pick_ID: "PICK-" + String(baseNum + idx).padStart(4, "0"),
+          Pick_ID: `${selectedDN}-PICK ${baseNum + idx}`,
           Pallet_ID: p.Pallet_ID,
           GRN_ID: p.GRN_ID,
           SKU_ID: p.SKU_ID,
@@ -262,7 +262,7 @@ export function PickAssignmentForm() {
       setSuccessMsg(`✅ ${rows.length} pallets assigned for ${selectedSKU}${allSkusDone ? " — DN Status: Picklist Generated!" : ""}`);
       setSelectedSKU(""); setSelectedSKUObj(null); setPallets([]); setPickRows({});
       setSearchPallet(""); setSearchGRN("");
-      fetch("/api/pick-assignment/generate-id").then(r => r.json()).then(d => d.nextId && setPickIdBase(d.nextId));
+      fetch("/api/pick-assignment/generate-id").then(r => r.json()).then(d => d.nextNum && setPickIdBaseNum(d.nextNum));
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -286,7 +286,9 @@ export function PickAssignmentForm() {
               <CardTitle className="text-xl">02 Pick Assignment — OB</CardTitle>
               <p className="text-sm text-muted-foreground mt-0.5">Assign inventory pallets to DN pick lines (FEFO order).</p>
             </div>
-            <span className="font-mono text-sm font-semibold text-primary bg-primary/10 px-3 py-1.5 rounded-full">Next: {pickIdBase}</span>
+            <span className="font-mono text-sm font-semibold text-primary bg-primary/10 px-3 py-1.5 rounded-full">
+              Next: {selectedDN ? `${selectedDN}-PICK ${pickIdBaseNum}` : `PICK ${pickIdBaseNum}`}
+            </span>
           </div>
         </CardHeader>
 
