@@ -646,30 +646,49 @@ function getPickAssignmentData(dnId, skuId) {
     // Cols: Pallet_ID(0) GRN_ID(1) SKU_ID(2) SKU_Description(3) Batch(4) Mfg_Date(5) Expiry_Date(6)
     //       Good_Box_Qty(7) Damage_Box_Qty(8) Current_Qty(9) Res_Good(10) Res_Damage(11)
     //       Free_Good(12) Free_Damage(13) Free_Total(14) Qty_Remaining(15)
+
+    // First pass: build pallet-level total_qty and SKU count maps across ALL rows (not just this SKU)
+    const palletTotalMap = {};    // Pallet_ID -> sum of Current_Qty across all rows
+    const palletSkuSetMap = {};   // Pallet_ID -> Set of SKU_IDs
+    for (let i = 1; i < invRows.length; i++) {
+      const r = invRows[i];
+      const pid = String(r[0] || "").trim();
+      if (!pid) continue;
+      palletTotalMap[pid] = (palletTotalMap[pid] || 0) + (parseFloat(r[9]) || 0);
+      if (!palletSkuSetMap[pid]) palletSkuSetMap[pid] = new Set();
+      palletSkuSetMap[pid].add(String(r[2] || "").trim());
+    }
+
+    // Second pass: filter rows for the requested SKU
     for (let i = 1; i < invRows.length; i++) {
       const row = invRows[i];
       if (String(row[2]).trim() !== String(skuId).trim()) continue;
       const freeTotal = parseFloat(row[14]) || 0;
-      if (freeTotal <= 0) continue; // skip empty pallets
+      if (freeTotal <= 0) continue; // skip fully reserved/empty rows
       const expiryRaw = row[6];
       const mfgRaw = row[5];
       let expiryStr = "";
       let mfgStr = "";
       try { expiryStr = expiryRaw ? Utilities.formatDate(new Date(expiryRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expiryStr = String(expiryRaw || ""); }
       try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { mfgStr = String(mfgRaw || ""); }
+      const palletId = String(row[0]).trim();
+      const grnId   = String(row[1]).trim();
       pallets.push({
-        Pallet_ID: String(row[0]).trim(),
-        GRN_ID: String(row[1]).trim(),
+        _key: palletId + "||" + grnId + "||" + i,   // unique per row
+        Pallet_ID: palletId,
+        GRN_ID: grnId,
         SKU_ID: String(row[2]).trim(),
         SKU_Description: String(row[3]).trim(),
         Batch_Number: String(row[4] || "").trim(),
         Manufacturing_Date: mfgStr,
         Expiry_Date: expiryStr,
         Expiry_Raw: expiryRaw ? new Date(expiryRaw).getTime() : 0,
-        Location_ID: "",    // filled below
+        Location_ID: "",
         Free_Good_Box_Qty: parseFloat(row[12]) || 0,
         Free_Damage_Box_Qty: parseFloat(row[13]) || 0,
-        Free_Total_Qty: freeTotal
+        Free_Total_Qty: freeTotal,
+        Pallet_Total_Qty: palletTotalMap[palletId] || 0,
+        SKU_Count_In_Pallet: palletSkuSetMap[palletId] ? palletSkuSetMap[palletId].size : 1
       });
     }
 
@@ -678,10 +697,20 @@ function getPickAssignmentData(dnId, skuId) {
     if (palletStatusSheet) {
       const psRows = palletStatusSheet.getDataRange().getValues();
       const locMap = {};
+      // Try to also read Total_Qty from col D (index 3) if it exists
+      const totalQtyFromStatus = {};
       for (let i = 1; i < psRows.length; i++) {
-        locMap[String(psRows[i][0]).trim()] = String(psRows[i][2] || "").trim();
+        const pid = String(psRows[i][0]).trim();
+        locMap[pid] = String(psRows[i][2] || "").trim();
+        if (psRows[i][3] !== undefined && psRows[i][3] !== "") {
+          totalQtyFromStatus[pid] = parseFloat(psRows[i][3]) || 0;
+        }
       }
-      pallets.forEach(p => { p.Location_ID = locMap[p.Pallet_ID] || ""; });
+      pallets.forEach(p => {
+        p.Location_ID = locMap[p.Pallet_ID] || "";
+        // Override Pallet_Total_Qty with Status sheet value if available
+        if (totalQtyFromStatus[p.Pallet_ID]) p.Pallet_Total_Qty = totalQtyFromStatus[p.Pallet_ID];
+      });
     }
 
     // Sort by Expiry FEFO (earliest first)

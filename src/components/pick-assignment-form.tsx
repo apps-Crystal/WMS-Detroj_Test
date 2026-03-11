@@ -9,14 +9,27 @@ import { Input } from "@/components/ui/input";
 interface DN { DN_ID: string; Customer_Name: string; Status: string; }
 interface DNSKU { SKU_ID: string; SKU_Description: string; Order_Quantity: number; Line_No: string; }
 interface Pallet {
-  Pallet_ID: string; GRN_ID: string; SKU_ID: string; SKU_Description: string;
-  Batch_Number: string; Manufacturing_Date: string; Expiry_Date: string; Location_ID: string;
-  Free_Good_Box_Qty: number; Free_Damage_Box_Qty: number; Free_Total_Qty: number;
+  _key: string;           // unique row key: PalletID||GRNID||rowIdx
+  Pallet_ID: string;
+  GRN_ID: string;
+  SKU_ID: string;
+  SKU_Description: string;
+  Batch_Number: string;
+  Manufacturing_Date: string;
+  Expiry_Date: string;
+  Location_ID: string;
+  Free_Good_Box_Qty: number;
+  Free_Damage_Box_Qty: number;
+  Free_Total_Qty: number;
+  Pallet_Total_Qty: number;     // total qty across ALL skus on this pallet
+  SKU_Count_In_Pallet: number;  // distinct SKU count on this pallet
 }
 interface PickRow extends Pallet {
   Pick_Good_Box_Qty: number;
   Pick_Damage_Box_Qty: number;
   Is_Last: boolean;
+  overGood: boolean;            // validation flag
+  overDamage: boolean;
 }
 
 /* ── Component ─────────────────────────────────────────────── */
@@ -24,26 +37,21 @@ export function PickAssignmentForm() {
   const { data: session } = useSession();
   void session;
 
-  // Master data
   const [dns, setDns] = useState<DN[]>([]);
   const [dnSkus, setDnSkus] = useState<DNSKU[]>([]);
   const [pallets, setPallets] = useState<Pallet[]>([]);
 
-  // Selections
   const [selectedDN, setSelectedDN] = useState("");
   const [selectedSKU, setSelectedSKU] = useState("");
   const [selectedSKUObj, setSelectedSKUObj] = useState<DNSKU | null>(null);
 
-  // Search / filter
   const [searchPallet, setSearchPallet] = useState("");
   const [searchGRN, setSearchGRN] = useState("");
 
-  // Row state: palletId -> pick quantities
+  // keyed by _key (unique row key)
   const [pickRows, setPickRows] = useState<Record<string, PickRow>>({});
 
-  // auto-assign pick ID base
   const [pickIdBase, setPickIdBase] = useState("PICK-0001");
-
   const [loading, setLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
@@ -60,7 +68,7 @@ export function PickAssignmentForm() {
     });
   }, []);
 
-  // ── When DN changes: load its SKUs
+  // ── When DN changes
   useEffect(() => {
     setSelectedSKU(""); setSelectedSKUObj(null); setPallets([]); setPickRows({});
     setDnSkus([]); setSearchPallet(""); setSearchGRN("");
@@ -77,43 +85,62 @@ export function PickAssignmentForm() {
     setLoading(true); setPallets([]); setPickRows({}); setSearchPallet(""); setSearchGRN("");
     try {
       const d = await fetch(`/api/pick-assignment/data?dnId=${encodeURIComponent(selectedDN)}&skuId=${encodeURIComponent(skuId)}`).then(r => r.json());
-      const ps: Pallet[] = d.pallets || [];
+      const ps: Pallet[] = (d.pallets || []).map((p: Pallet, idx: number) => ({
+        ...p,
+        _key: p._key || `${p.Pallet_ID}||${p.GRN_ID}||${idx}`,
+      }));
       setPallets(ps);
       const rows: Record<string, PickRow> = {};
-      ps.forEach(p => { rows[p.Pallet_ID] = { ...p, Pick_Good_Box_Qty: 0, Pick_Damage_Box_Qty: 0, Is_Last: false }; });
+      ps.forEach(p => { rows[p._key] = { ...p, Pick_Good_Box_Qty: 0, Pick_Damage_Box_Qty: 0, Is_Last: false, overGood: false, overDamage: false }; });
       setPickRows(rows);
     } finally { setLoading(false); }
   }, [selectedDN]);
 
   const handleSKUChange = (skuId: string) => {
     setSelectedSKU(skuId);
-    const sku = dnSkus.find(s => s.SKU_ID === skuId) || null;
-    setSelectedSKUObj(sku);
+    setSelectedSKUObj(dnSkus.find(s => s.SKU_ID === skuId) || null);
     loadPallets(skuId);
   };
 
-  // ── Filtered pallets (search)
+  // ── Filtered pallets
   const filteredPallets = pallets.filter(p => {
-    const pMatch = !searchPallet || p.Pallet_ID.toLowerCase().includes(searchPallet.toLowerCase());
-    const gMatch = !searchGRN || p.GRN_ID.toLowerCase().includes(searchGRN.toLowerCase());
-    return pMatch && gMatch;
+    const pm = !searchPallet || p.Pallet_ID.toLowerCase().includes(searchPallet.toLowerCase());
+    const gm = !searchGRN || p.GRN_ID.toLowerCase().includes(searchGRN.toLowerCase());
+    return pm && gm;
   });
 
-  // ── Derived totals (based on ALL pallets, not filtered)
+  // ── Per-pallet total picks (shared across all rows of same Pallet_ID)
+  const palletPickTotalMap: Record<string, number> = {};
+  pallets.forEach(p => {
+    const r = pickRows[p._key];
+    const t = (r?.Pick_Good_Box_Qty || 0) + (r?.Pick_Damage_Box_Qty || 0);
+    palletPickTotalMap[p.Pallet_ID] = (palletPickTotalMap[p.Pallet_ID] || 0) + t;
+  });
+
+  // ── Grand totals for footer / summary strip
   const totalPickedGood = Object.values(pickRows).reduce((s, r) => s + (r.Pick_Good_Box_Qty || 0), 0);
   const totalPickedDamage = Object.values(pickRows).reduce((s, r) => s + (r.Pick_Damage_Box_Qty || 0), 0);
   const totalPicked = totalPickedGood + totalPickedDamage;
   const orderQty = selectedSKUObj?.Order_Quantity || 0;
   const closingOfSKU = Math.max(0, orderQty - totalPicked);
 
-  const getClosingOfPallet = (r: PickRow) =>
-    Math.max(0, r.Free_Total_Qty - (r.Pick_Good_Box_Qty || 0) - (r.Pick_Damage_Box_Qty || 0));
+  // ── Closing pallet = Pallet_Total_Qty − all picks from that pallet
+  const closingPalletFor = (p: Pallet) =>
+    Math.max(0, p.Pallet_Total_Qty - (palletPickTotalMap[p.Pallet_ID] || 0));
 
-  const autoMarkLastPallet = (rows: Record<string, PickRow>) => {
-    pallets.forEach(p => { rows[p.Pallet_ID] = { ...rows[p.Pallet_ID], Is_Last: false }; });
-    const active = pallets.filter(p => (rows[p.Pallet_ID]?.Pick_Good_Box_Qty || 0) + (rows[p.Pallet_ID]?.Pick_Damage_Box_Qty || 0) > 0);
-    if (active.length > 0) rows[active[active.length - 1].Pallet_ID] = { ...rows[active[active.length - 1].Pallet_ID], Is_Last: true };
-    return rows;
+  // ── Auto-mark last picking pallet
+  const withLastMarked = (rows: Record<string, PickRow>): Record<string, PickRow> => {
+    const updated = { ...rows };
+    pallets.forEach(p => { updated[p._key] = { ...updated[p._key], Is_Last: false }; });
+    const active = pallets.filter(p => {
+      const r = updated[p._key];
+      return r && (r.Pick_Good_Box_Qty > 0 || r.Pick_Damage_Box_Qty > 0);
+    });
+    if (active.length > 0) {
+      const lastKey = active[active.length - 1]._key;
+      updated[lastKey] = { ...updated[lastKey], Is_Last: true };
+    }
+    return updated;
   };
 
   // ── Default Assign (FEFO)
@@ -121,30 +148,53 @@ export function PickAssignmentForm() {
     let remaining = orderQty;
     const newRows = { ...pickRows };
     pallets.forEach(p => {
-      if (remaining <= 0) { newRows[p.Pallet_ID] = { ...newRows[p.Pallet_ID], Pick_Good_Box_Qty: 0, Pick_Damage_Box_Qty: 0, Is_Last: false }; return; }
+      if (remaining <= 0) {
+        newRows[p._key] = { ...newRows[p._key], Pick_Good_Box_Qty: 0, Pick_Damage_Box_Qty: 0, overGood: false, overDamage: false };
+        return;
+      }
       const assignGood = Math.min(p.Free_Good_Box_Qty, remaining);
       remaining -= assignGood;
       const assignDamage = Math.min(p.Free_Damage_Box_Qty, remaining);
       remaining -= assignDamage;
-      newRows[p.Pallet_ID] = { ...newRows[p.Pallet_ID], Pick_Good_Box_Qty: assignGood, Pick_Damage_Box_Qty: assignDamage };
+      newRows[p._key] = { ...newRows[p._key], Pick_Good_Box_Qty: assignGood, Pick_Damage_Box_Qty: assignDamage, overGood: false, overDamage: false };
     });
-    setPickRows(autoMarkLastPallet(newRows));
+    setPickRows(withLastMarked(newRows));
   };
 
-  const updateRow = (palletId: string, field: "Pick_Good_Box_Qty" | "Pick_Damage_Box_Qty", value: number) => {
+  const updateRow = (key: string, field: "Pick_Good_Box_Qty" | "Pick_Damage_Box_Qty", value: number) => {
     setPickRows(prev => {
-      const updated = { ...prev, [palletId]: { ...prev[palletId], [field]: Math.max(0, value) } };
-      return autoMarkLastPallet({ ...updated });
+      const row = prev[key];
+      const safeVal = Math.max(0, value);
+      const maxVal = field === "Pick_Good_Box_Qty" ? row.Free_Good_Box_Qty : row.Free_Damage_Box_Qty;
+      const clamped = Math.min(safeVal, maxVal);
+      const overLimit = safeVal > maxVal;
+      const updated = {
+        ...prev,
+        [key]: {
+          ...row,
+          [field]: clamped,
+          overGood: field === "Pick_Good_Box_Qty" ? overLimit : row.overGood,
+          overDamage: field === "Pick_Damage_Box_Qty" ? overLimit : row.overDamage,
+        }
+      };
+      return withLastMarked(updated);
     });
   };
 
   // ── Submit
   const handleSubmit = async () => {
     const activeRows = pallets.filter(p => {
-      const r = pickRows[p.Pallet_ID];
+      const r = pickRows[p._key];
       return r && (r.Pick_Good_Box_Qty > 0 || r.Pick_Damage_Box_Qty > 0);
     });
     if (activeRows.length === 0) return setErrorMsg("No pick quantities entered. Use Default Assign or enter quantities manually.");
+
+    // Validate: no over-pick
+    const overPick = activeRows.find(p => {
+      const r = pickRows[p._key];
+      return r.overGood || r.overDamage || r.Pick_Good_Box_Qty > p.Free_Good_Box_Qty || r.Pick_Damage_Box_Qty > p.Free_Damage_Box_Qty;
+    });
+    if (overPick) return setErrorMsg("One or more rows exceed the available free quantity. Please correct before submitting.");
 
     setIsSubmitting(true); setSuccessMsg(""); setErrorMsg("");
     try {
@@ -154,7 +204,7 @@ export function PickAssignmentForm() {
       const allSkusDone = dnSkus.every(s => newlyCompleted.has(s.SKU_ID));
 
       const rows = activeRows.map((p, idx) => {
-        const r = pickRows[p.Pallet_ID];
+        const r = pickRows[p._key];
         const pickTotal = (r.Pick_Good_Box_Qty || 0) + (r.Pick_Damage_Box_Qty || 0);
         return {
           DN_ID: selectedDN,
@@ -173,7 +223,8 @@ export function PickAssignmentForm() {
           Pick_Damage_Box_Qty: r.Pick_Damage_Box_Qty || 0,
           Pick_Total_Qty: pickTotal,
           Closing_of_SKU: closingOfSKU,
-          Closing_of_Palet: getClosingOfPallet(r),
+          Closing_of_Palet: closingPalletFor(p),
+          SKU_Count_In_Pallet: p.SKU_Count_In_Pallet,
           Is_This_Last_Pallet_For_Pick_Assignment: r.Is_Last ? "Yes" : "No",
         };
       });
@@ -191,8 +242,8 @@ export function PickAssignmentForm() {
       setSelectedSKU(""); setSelectedSKUObj(null); setPallets([]); setPickRows({});
       setSearchPallet(""); setSearchGRN("");
       fetch("/api/pick-assignment/generate-id").then(r => r.json()).then(d => d.nextId && setPickIdBase(d.nextId));
-    } catch (err: any) {
-      setErrorMsg(err.message || "An error occurred");
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setIsSubmitting(false);
     }
@@ -222,7 +273,6 @@ export function PickAssignmentForm() {
           {successMsg && <div className="p-4 text-green-700 bg-green-50 border border-green-200 rounded-md text-sm font-medium">{successMsg}</div>}
           {errorMsg && <div className="p-4 text-red-700 bg-red-50 border border-red-200 rounded-md text-sm">{errorMsg}</div>}
 
-          {/* DN + SKU selectors */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="space-y-2">
               <label className="text-sm font-semibold text-blue-700">Select DN ID <span className="text-red-500">*</span></label>
@@ -250,7 +300,6 @@ export function PickAssignmentForm() {
             </div>
           </div>
 
-          {/* DN Summary strip */}
           {selectedDN && (
             <div className="flex flex-wrap gap-3 text-xs p-3 bg-muted/30 rounded-md border">
               <span>DN: <strong className="font-mono">{selectedDN}</strong></span>
@@ -272,48 +321,35 @@ export function PickAssignmentForm() {
         </CardContent>
       </Card>
 
-      {/* ── Pallet Table Card ────────────────────────────── */}
+      {/* ── Pallet Table ─────────────────────────────────── */}
       <Card className="shadow-sm">
         <CardHeader className="border-b py-3 px-5">
           <div className="flex flex-wrap items-center gap-3 justify-between">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
               <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">
-                {loading ? "Loading pallets..." : pallets.length > 0
+                {loading ? "Loading..." : pallets.length > 0
                   ? `${filteredPallets.length} / ${pallets.length} Pallets (FEFO)`
                   : "Select DN & SKU to view pallets"}
               </h3>
-
-              {/* Search inputs */}
               {pallets.length > 0 && (
-                <div className="flex items-center gap-2">
+                <>
                   <div className="relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
-                    <Input
-                      placeholder="Search Pallet ID..."
-                      value={searchPallet}
-                      onChange={e => setSearchPallet(e.target.value)}
-                      className="h-8 pl-7 pr-3 text-xs w-44 font-mono"
-                    />
+                    <Input placeholder="Pallet ID..." value={searchPallet} onChange={e => setSearchPallet(e.target.value)}
+                      className="h-8 pl-7 pr-3 text-xs w-40 font-mono" />
                   </div>
                   <div className="relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
-                    <Input
-                      placeholder="Search GRN ID..."
-                      value={searchGRN}
-                      onChange={e => setSearchGRN(e.target.value)}
-                      className="h-8 pl-7 pr-3 text-xs w-40 font-mono"
-                    />
+                    <Input placeholder="GRN ID..." value={searchGRN} onChange={e => setSearchGRN(e.target.value)}
+                      className="h-8 pl-7 pr-3 text-xs w-36 font-mono" />
                   </div>
                   {(searchPallet || searchGRN) && (
                     <button onClick={() => { setSearchPallet(""); setSearchGRN(""); }}
-                      className="text-xs text-muted-foreground hover:text-foreground underline">
-                      Clear
-                    </button>
+                      className="text-xs text-muted-foreground hover:text-foreground underline">Clear</button>
                   )}
-                </div>
+                </>
               )}
             </div>
-
             {pallets.length > 0 && (
               <div className="flex gap-2">
                 <button onClick={handleDefaultAssign}
@@ -347,47 +383,72 @@ export function PickAssignmentForm() {
                     <th className="px-3 py-3 text-right w-28 whitespace-nowrap">Pick Good</th>
                     <th className="px-3 py-3 text-right w-28 whitespace-nowrap">Pick Dmg</th>
                     <th className="px-3 py-3 text-right whitespace-nowrap">Pick Total</th>
-                    <th className="px-3 py-3 text-right whitespace-nowrap">Closing Pallet</th>
+                    <th className="px-3 py-3 text-right whitespace-nowrap" title="Pallet_Total_Qty − all picks from this pallet">Closing Pallet</th>
+                    <th className="px-3 py-3 text-right whitespace-nowrap" title="SKU count on this pallet"># SKUs on Pallet</th>
                     <th className="px-3 py-3 text-center whitespace-nowrap">Last?</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredPallets.length === 0 ? (
-                    <tr><td colSpan={14} className="text-center py-8 text-muted-foreground text-sm">No pallets match your search.</td></tr>
+                    <tr><td colSpan={15} className="text-center py-8 text-muted-foreground text-sm">No pallets match your search.</td></tr>
                   ) : filteredPallets.map((p, idx) => {
-                    const r = pickRows[p.Pallet_ID];
+                    const r = pickRows[p._key];
                     if (!r) return null;
                     const pickTotal = (r.Pick_Good_Box_Qty || 0) + (r.Pick_Damage_Box_Qty || 0);
-                    const closingPallet = getClosingOfPallet(r);
+                    const closingPallet = closingPalletFor(p);
                     const hasAnyPick = pickTotal > 0;
+                    const hasError = r.overGood || r.overDamage;
                     return (
-                      <tr key={p.Pallet_ID}
-                        className={`border-b transition-colors ${hasAnyPick ? "bg-green-50 border-l-4 border-l-green-500" : idx % 2 === 0 ? "bg-white" : "bg-muted/20"}`}>
+                      <tr key={p._key}
+                        className={`border-b transition-colors ${hasError ? "bg-red-50 border-l-4 border-l-red-500" : hasAnyPick ? "bg-green-50 border-l-4 border-l-green-500" : idx % 2 === 0 ? "bg-white" : "bg-muted/20"}`}>
                         <td className="px-3 py-2.5 font-mono text-xs font-semibold whitespace-nowrap">{p.Pallet_ID}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-blue-700 whitespace-nowrap">{p.GRN_ID || <span className="text-muted-foreground">—</span>}</td>
-                        <td className="px-3 py-2.5 text-xs font-mono whitespace-nowrap">{p.Location_ID || <span className="text-muted-foreground">—</span>}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-blue-700 whitespace-nowrap">{p.GRN_ID || "—"}</td>
+                        <td className="px-3 py-2.5 text-xs font-mono whitespace-nowrap">{p.Location_ID || "—"}</td>
                         <td className="px-3 py-2.5 text-xs whitespace-nowrap">{p.Batch_Number || "—"}</td>
                         <td className="px-3 py-2.5 text-xs font-mono whitespace-nowrap">{p.Manufacturing_Date || "—"}</td>
                         <td className="px-3 py-2.5 text-xs font-mono whitespace-nowrap">{p.Expiry_Date || "—"}</td>
                         <td className="px-3 py-2.5 text-right font-mono text-xs">{p.Free_Good_Box_Qty}</td>
                         <td className="px-3 py-2.5 text-right font-mono text-xs text-orange-600">{p.Free_Damage_Box_Qty}</td>
                         <td className="px-3 py-2.5 text-right font-mono text-xs font-semibold">{p.Free_Total_Qty}</td>
+                        {/* Pick Good input */}
                         <td className="px-2 py-2">
-                          <input type="number" min="0" max={p.Free_Good_Box_Qty}
-                            value={r.Pick_Good_Box_Qty || ""}
-                            onChange={e => updateRow(p.Pallet_ID, "Pick_Good_Box_Qty", parseFloat(e.target.value) || 0)}
-                            placeholder="0"
-                            className="w-full h-8 px-2 text-right text-sm border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-primary font-mono bg-white" />
+                          <div className="relative">
+                            <input type="number" min="0" max={p.Free_Good_Box_Qty}
+                              value={r.Pick_Good_Box_Qty || ""}
+                              onChange={e => updateRow(p._key, "Pick_Good_Box_Qty", parseFloat(e.target.value) || 0)}
+                              placeholder="0"
+                              className={`w-full h-8 px-2 text-right text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-primary font-mono bg-white ${r.overGood ? "border-red-500 text-red-600" : "border-input"}`} />
+                            {r.overGood && (
+                              <span className="absolute -bottom-4 right-0 text-[10px] text-red-600 whitespace-nowrap">
+                                Max: {p.Free_Good_Box_Qty}
+                              </span>
+                            )}
+                          </div>
                         </td>
+                        {/* Pick Damage input */}
                         <td className="px-2 py-2">
-                          <input type="number" min="0" max={p.Free_Damage_Box_Qty}
-                            value={r.Pick_Damage_Box_Qty || ""}
-                            onChange={e => updateRow(p.Pallet_ID, "Pick_Damage_Box_Qty", parseFloat(e.target.value) || 0)}
-                            placeholder="0"
-                            className="w-full h-8 px-2 text-right text-sm border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-primary font-mono bg-white" />
+                          <div className="relative">
+                            <input type="number" min="0" max={p.Free_Damage_Box_Qty}
+                              value={r.Pick_Damage_Box_Qty || ""}
+                              onChange={e => updateRow(p._key, "Pick_Damage_Box_Qty", parseFloat(e.target.value) || 0)}
+                              placeholder="0"
+                              className={`w-full h-8 px-2 text-right text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-primary font-mono bg-white ${r.overDamage ? "border-red-500 text-red-600" : "border-input"}`} />
+                            {r.overDamage && (
+                              <span className="absolute -bottom-4 right-0 text-[10px] text-red-600 whitespace-nowrap">
+                                Max: {p.Free_Damage_Box_Qty}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className={`px-3 py-2.5 text-right font-mono text-sm font-bold ${hasAnyPick ? "text-green-700" : "text-muted-foreground"}`}>{pickTotal}</td>
-                        <td className={`px-3 py-2.5 text-right font-mono text-xs ${closingPallet === 0 && hasAnyPick ? "text-orange-500 font-bold" : ""}`}>{closingPallet}</td>
+                        <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${closingPallet === 0 && hasAnyPick ? "text-orange-500" : ""}`}>
+                          {closingPallet}
+                          <span className="block text-[10px] text-muted-foreground font-normal">of {p.Pallet_Total_Qty}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-center font-mono text-xs font-semibold text-purple-700">
+                          {p.SKU_Count_In_Pallet}
+                          <span className="block text-[10px] text-muted-foreground font-normal">SKU{p.SKU_Count_In_Pallet !== 1 ? "s" : ""}</span>
+                        </td>
                         <td className="px-3 py-2.5 text-center">
                           {r.Is_Last
                             ? <span className="text-xs bg-amber-100 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">Last</span>
@@ -399,26 +460,21 @@ export function PickAssignmentForm() {
                 </tbody>
                 <tfoot>
                   <tr className="bg-slate-100 font-semibold border-t-2">
-                    <td colSpan={8} className="px-3 py-3 text-sm">Totals ({filteredPallets.length} pallets shown)</td>
-                    <td className="px-3 py-3 text-right font-mono text-sm">{filteredPallets.reduce((s, p) => s + p.Free_Total_Qty, 0)}</td>
+                    <td colSpan={9} className="px-3 py-3 text-sm">Totals ({filteredPallets.length} shown)</td>
                     <td className="px-3 py-3 text-right font-mono text-sm text-green-700">{totalPickedGood}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm text-orange-600">{totalPickedDamage}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm font-bold text-primary">{totalPicked}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm text-red-500">{closingOfSKU}</td>
-                    <td></td>
+                    <td></td><td></td>
                   </tr>
                 </tfoot>
               </table>
             </div>
           ) : (
             <div className="py-16 text-center text-muted-foreground text-sm">
-              {loading ? (
-                <span className="animate-pulse">Loading inventory pallets...</span>
-              ) : selectedDN && selectedSKU ? (
-                "No available pallets found for this SKU."
-              ) : (
-                "Select DN & SKU to view available pallets"
-              )}
+              {loading ? <span className="animate-pulse">Loading inventory pallets...</span>
+                : selectedDN && selectedSKU ? "No available pallets found for this SKU."
+                : "Select DN & SKU to view available pallets"}
             </div>
           )}
         </CardContent>
