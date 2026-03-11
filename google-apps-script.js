@@ -669,10 +669,10 @@ function getPickAssignmentData(dnId, skuId) {
       const mfgRaw = row[5];
       let expiryStr = "";
       let mfgStr = "";
-      try { expiryStr = expiryRaw ? Utilities.formatDate(new Date(expiryRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expiryStr = String(expiryRaw || ""); }
-      try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { mfgStr = String(mfgRaw || ""); }
+      try { expiryStr = expiryRaw ? Utilities.formatDate(new Date(expiryRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch (e) { expiryStr = String(expiryRaw || ""); }
+      try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch (e) { mfgStr = String(mfgRaw || ""); }
       const palletId = String(row[0]).trim();
-      const grnId   = String(row[1]).trim();
+      const grnId = String(row[1]).trim();
       pallets.push({
         _key: palletId + "||" + grnId + "||" + i,   // unique per row
         Pallet_ID: palletId,

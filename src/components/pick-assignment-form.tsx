@@ -131,7 +131,13 @@ export function PickAssignmentForm() {
   const totalPickedDamage = Object.values(pickRows).reduce((s, r) => s + (r.Pick_Damage_Box_Qty || 0), 0);
   const totalPicked = totalPickedGood + totalPickedDamage;
   const orderQty = selectedSKUObj?.Order_Quantity || 0;
-  const closingOfSKU = Math.max(0, orderQty - totalPicked);
+
+  // Total free qty available for this SKU across ALL loaded pallet rows
+  const totalSkuFreeQty = pallets.reduce((s, p) => s + p.Free_Total_Qty, 0);
+  // Closing SKU = how much stock of this SKU remains after current picks
+  const closingOfSKU = Math.max(0, totalSkuFreeQty - totalPicked);
+  // Remaining to fulfil the order
+  const remainingToOrder = Math.max(0, orderQty - totalPicked);
 
   // ── Closing pallet = Pallet_Total_Qty − all picks from that pallet
   const closingPalletFor = (p: Pallet) =>
@@ -322,7 +328,8 @@ export function PickAssignmentForm() {
                 <>
                   <span className="ml-auto">Order Qty: <strong className="text-primary">{orderQty}</strong></span>
                   <span>Picked: <strong className={totalPicked >= orderQty ? "text-green-600" : "text-orange-500"}>{totalPicked}</strong></span>
-                  <span>Remaining: <strong className={closingOfSKU === 0 ? "text-green-600" : "text-red-500"}>{closingOfSKU}</strong></span>
+                  <span>To Order: <strong className={remainingToOrder === 0 ? "text-green-600" : "text-red-500"}>{remainingToOrder}</strong></span>
+                  <span>Stock Closing: <strong className={closingOfSKU === 0 ? "text-orange-500" : "text-blue-600"}>{closingOfSKU}</strong></span>
                 </>
               )}
             </div>
@@ -471,10 +478,12 @@ export function PickAssignmentForm() {
                           {closingPallet}
                           <span className="block text-[10px] text-muted-foreground font-normal">of {p.Pallet_Total_Qty}</span>
                         </td>
-                        {/* Closing SKU — same for every row since it's SKU-level */}
-                        <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${closingOfSKU === 0 ? "text-green-600" : closingOfSKU < 0 ? "text-red-600" : "text-amber-600"}`}>
+                        {/* Closing SKU — same for every row: total free stock of this SKU minus what's been picked */}
+                        <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${
+                          closingOfSKU === 0 ? "text-orange-500" : "text-blue-600"
+                        }`}>
                           {closingOfSKU}
-                          <span className="block text-[10px] text-muted-foreground font-normal">of {orderQty}</span>
+                          <span className="block text-[10px] text-muted-foreground font-normal">of {totalSkuFreeQty}</span>
                         </td>
                         {/* SKU count on pallet */}
                         <td className="px-3 py-2.5 text-center font-mono text-xs font-semibold text-purple-700">
