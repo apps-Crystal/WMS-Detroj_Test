@@ -822,19 +822,19 @@ function getPalletDetails(palletId) {
     if (String(invData[i][0] || "").trim() !== String(palletId).trim()) continue;
     const mfgRaw = invData[i][5], expRaw = invData[i][6];
     let mfgStr = "", expStr = "";
-    try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { mfgStr = String(mfgRaw || ""); }
-    try { expStr = expRaw ? Utilities.formatDate(new Date(expRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch(e) { expStr = String(expRaw || ""); }
+    try { mfgStr = mfgRaw ? Utilities.formatDate(new Date(mfgRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch (e) { mfgStr = String(mfgRaw || ""); }
+    try { expStr = expRaw ? Utilities.formatDate(new Date(expRaw), "Asia/Kolkata", "dd/MM/yyyy") : ""; } catch (e) { expStr = String(expRaw || ""); }
     rows.push({
-      GRN_ID:           String(invData[i][1] || ""),
-      SKU_ID:           String(invData[i][2] || ""),
-      SKU_Description:  String(invData[i][3] || ""),
-      Batch_Number:     String(invData[i][4] || ""),
+      GRN_ID: String(invData[i][1] || ""),
+      SKU_ID: String(invData[i][2] || ""),
+      SKU_Description: String(invData[i][3] || ""),
+      Batch_Number: String(invData[i][4] || ""),
       Manufacturing_Date: mfgStr,
-      Expiry_Date:      expStr,
-      Good_Box_Qty:     parseFloat(invData[i][7])  || 0,
-      Damage_Box_Qty:   parseFloat(invData[i][8])  || 0,
-      Current_Qty:      parseFloat(invData[i][9])  || 0,
-      Free_Total_Qty:   parseFloat(invData[i][14]) || 0,
+      Expiry_Date: expStr,
+      Good_Box_Qty: parseFloat(invData[i][7]) || 0,
+      Damage_Box_Qty: parseFloat(invData[i][8]) || 0,
+      Current_Qty: parseFloat(invData[i][9]) || 0,
+      Free_Total_Qty: parseFloat(invData[i][14]) || 0,
     });
   }
 
@@ -844,8 +844,8 @@ function getPalletDetails(palletId) {
     const stsData = stsSheet.getDataRange().getValues();
     for (let i = 1; i < stsData.length; i++) {
       if (String(stsData[i][0] || "").trim() === String(palletId).trim()) {
-        occupancy  = String(stsData[i][1] || "");
-        location   = String(stsData[i][2] || "");
+        occupancy = String(stsData[i][1] || "");
+        location = String(stsData[i][2] || "");
         assignment = String(stsData[i][3] || "");
         break;
       }
@@ -885,10 +885,16 @@ function mergePallets(data) {
     const activeDst = dstRows.slice();
 
     // ── STEP 2 & 3: For each source row, match or create in destination
-    srcRows.forEach(function(src) {
+    const rowsToDelete = [];
+    srcRows.forEach(function (src, srcIndex) {
+      const moveGood = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveGood) || 0) : (parseFloat(src.data[7]) || 0);
+      const moveDmg  = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveDmg)  || 0) : (parseFloat(src.data[8]) || 0);
+      
+      if (moveGood <= 0 && moveDmg <= 0) return; // Skip if nothing to move
+
       // Match key: GRN_ID(1), SKU_ID(2), SKU_Description(3), Batch_Number(4), Mfg_Date(5), Expiry_Date(6)
-      const keyOf = function(row) {
-        return [row[1],row[2],row[3],row[4],String(row[5]),String(row[6])].map(function(v){return String(v||'').trim();}).join('||');
+      const keyOf = function (row) {
+        return [row[1], row[2], row[3], row[4], String(row[5]), String(row[6])].map(function (v) { return String(v || '').trim(); }).join('||');
       };
       const srcKey = keyOf(src.data);
       let matched = null;
@@ -896,39 +902,71 @@ function mergePallets(data) {
         if (keyOf(activeDst[d].data) === srcKey) { matched = activeDst[d]; break; }
       }
 
+      const newCurrentMove = moveGood + moveDmg;
+
       if (matched) {
         // ── STEP 2: Matching SKU → add quantities into destination row
-        const newGood    = (parseFloat(matched.data[7]) || 0) + (parseFloat(src.data[7]) || 0);
-        const newDamage  = (parseFloat(matched.data[8]) || 0) + (parseFloat(src.data[8]) || 0);
-        const newCurrent = (parseFloat(matched.data[9]) || 0) + (parseFloat(src.data[9]) || 0);
+        const newGood = (parseFloat(matched.data[7]) || 0) + moveGood;
+        const newDamage = (parseFloat(matched.data[8]) || 0) + moveDmg;
+        const newCurrent = (parseFloat(matched.data[9]) || 0) + newCurrentMove;
         invSheet.getRange(matched.rowIdx + 1, 8).setValue(newGood);    // Good_Box_Qty
         invSheet.getRange(matched.rowIdx + 1, 9).setValue(newDamage);  // Damage_Box_Qty
         invSheet.getRange(matched.rowIdx + 1, 10).setValue(newCurrent);// Current_Qty
         // Also recalculate Free_Good, Free_Damage, Free_Total (col 13,14,15 = 1-indexed)
         const resGood = parseFloat(matched.data[10]) || 0;
-        const resDmg  = parseFloat(matched.data[11]) || 0;
-        invSheet.getRange(matched.rowIdx + 1, 13).setValue(Math.max(0, newGood   - resGood));
+        const resDmg = parseFloat(matched.data[11]) || 0;
+        invSheet.getRange(matched.rowIdx + 1, 13).setValue(Math.max(0, newGood - resGood));
         invSheet.getRange(matched.rowIdx + 1, 14).setValue(Math.max(0, newDamage - resDmg));
         invSheet.getRange(matched.rowIdx + 1, 15).setValue(Math.max(0, newGood - resGood) + Math.max(0, newDamage - resDmg));
         // Update in-memory so further matches in this loop are correct
         matched.data[7] = newGood; matched.data[8] = newDamage; matched.data[9] = newCurrent;
-        log.push("Merged SKU " + src.data[2] + " (Good:+" + src.data[7] + ", Dmg:+" + src.data[8] + ") into " + dstId);
+        log.push("Merged SKU " + src.data[2] + " (Good:+" + moveGood + ", Dmg:+" + moveDmg + ") into " + dstId);
       } else {
         // ── STEP 3: No matching SKU → create new row in destination
         var newRow = src.data.slice();
         newRow[0] = dstId; // Change Pallet_ID to destination
+        newRow[7] = moveGood;
+        newRow[8] = moveDmg;
+        newRow[9] = newCurrentMove;
+        newRow[10] = 0; // Reserved Good = 0
+        newRow[11] = 0; // Reserved Dmg = 0
+        newRow[12] = moveGood; // Free Good
+        newRow[13] = moveDmg;  // Free Dmg
+        newRow[14] = newCurrentMove; // Free Total
         invSheet.appendRow(newRow);
         // Add to activeDst so it can be matched by subsequent source rows if needed
         activeDst.push({ rowIdx: -1, data: newRow }); // rowIdx -1 = newly added, skip deletion safety
-        log.push("Added new SKU row " + src.data[2] + " to " + dstId);
+        log.push("Added new SKU row " + src.data[2] + " to " + dstId + " (Qty: " + newCurrentMove + ")");
+      }
+
+      // ── STEP 4a: Update or Mark Source row for deletion
+      const srcGood = parseFloat(src.data[7]) || 0;
+      const srcDmg  = parseFloat(src.data[8]) || 0;
+      const remGood = Math.max(0, srcGood - moveGood);
+      const remDmg  = Math.max(0, srcDmg - moveDmg);
+      const remCurr = remGood + remDmg;
+      
+      const resGoodSrc = parseFloat(src.data[10]) || 0;
+      const resDmgSrc  = parseFloat(src.data[11]) || 0;
+
+      if (remGood === 0 && remDmg === 0 && resGoodSrc === 0 && resDmgSrc === 0) {
+        rowsToDelete.push(src.rowIdx);
+      } else {
+        invSheet.getRange(src.rowIdx + 1, 8).setValue(remGood);
+        invSheet.getRange(src.rowIdx + 1, 9).setValue(remDmg);
+        invSheet.getRange(src.rowIdx + 1, 10).setValue(remCurr);
+        invSheet.getRange(src.rowIdx + 1, 13).setValue(Math.max(0, remGood - resGoodSrc));
+        invSheet.getRange(src.rowIdx + 1, 14).setValue(Math.max(0, remDmg - resDmgSrc));
+        invSheet.getRange(src.rowIdx + 1, 15).setValue(Math.max(0, remGood - resGoodSrc) + Math.max(0, remDmg - resDmgSrc));
+        log.push("Partially moved SKU " + src.data[2] + ". Remaining on Source: " + remCurr);
       }
     });
 
-    // ── STEP 4: Delete source rows in reverse order to preserve sheet indices
-    const srcIndices = srcRows.map(function(r) { return r.rowIdx; }).sort(function(a,b){return b-a;});
-    srcIndices.forEach(function(ri) {
+    // ── STEP 4b: Delete source rows in reverse order to preserve sheet indices
+    const srcIndices = rowsToDelete.sort(function (a, b) { return b - a; });
+    srcIndices.forEach(function (ri) {
       invSheet.deleteRow(ri + 1); // convert 0-based to 1-based sheet row
-      log.push("Deleted source row " + (ri+1) + " from Pallet_Inventory_01");
+      log.push("Deleted fully depleted source row (index " + (ri + 1) + ") from Pallet_Inventory_01");
     });
 
     // ── STEP 5: Check if source pallet has any remaining rows
@@ -958,7 +996,7 @@ function mergePallets(data) {
       log: log
     });
 
-  } catch(err) {
+  } catch (err) {
     return jsonResponse({ status: "error", message: err.message || String(err) });
   }
 }
