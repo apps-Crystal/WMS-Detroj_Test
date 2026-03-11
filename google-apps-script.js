@@ -969,23 +969,37 @@ function mergePallets(data) {
       log.push("Deleted fully depleted source row (index " + (ri + 1) + ") from Pallet_Inventory_01");
     });
 
-    // ── STEP 5: Check if source pallet has any remaining rows
+    // ── STEP 5: Update Destination status & Check if source pallet has any remaining rows
     const refreshed = invSheet.getDataRange().getValues();
     let srcStillHasRows = false;
     for (let i = 1; i < refreshed.length; i++) {
       if (String(refreshed[i][0] || "").trim() === srcId) { srcStillHasRows = true; break; }
     }
 
-    if (!srcStillHasRows && stsSheet) {
+    if (stsSheet) {
       const stsData = stsSheet.getDataRange().getValues();
+      let dstUpdated = false, srcUpdated = false;
+      
       for (let i = 1; i < stsData.length; i++) {
-        if (String(stsData[i][0] || "").trim() === srcId) {
-          stsSheet.getRange(i + 1, 2).setValue("\u274C Unoccupied"); // Occupancy_Status col B
+        const rowPalletId = String(stsData[i][0] || "").trim();
+        
+        // Mark Destination as Occupied
+        if (rowPalletId === dstId) {
+          stsSheet.getRange(i + 1, 2).setValue("✅ Occupied"); // Occupancy_Status col B
+          log.push("Destination pallet " + dstId + " marked as Occupied in Pallet_Status_02");
+          dstUpdated = true;
+        }
+
+        // Mark Source as Unoccupied if entirely depleted
+        if (rowPalletId === srcId && !srcStillHasRows) {
+          stsSheet.getRange(i + 1, 2).setValue("❌ Unoccupied"); // Occupancy_Status col B
           stsSheet.getRange(i + 1, 3).setValue("");                  // Location_ID col C
           stsSheet.getRange(i + 1, 4).setValue("");                  // Assignment_Status col D
-          log.push("Source pallet " + srcId + " marked as Unoccupied in Pallet_Status_02");
-          break;
+          log.push("Source pallet " + srcId + " fully depleted and marked as Unoccupied in Pallet_Status_02");
+          srcUpdated = true;
         }
+        
+        if (dstUpdated && (srcUpdated || srcStillHasRows)) break;
       }
     }
 
