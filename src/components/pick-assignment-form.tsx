@@ -47,6 +47,9 @@ export function PickAssignmentForm() {
 
   const [searchPallet, setSearchPallet] = useState("");
   const [searchGRN, setSearchGRN] = useState("");
+  const [searchBatch, setSearchBatch] = useState("");
+  const [searchMfg, setSearchMfg] = useState("");
+  const [searchExpiry, setSearchExpiry] = useState("");
 
   // keyed by _key (unique row key)
   const [pickRows, setPickRows] = useState<Record<string, PickRow>>({});
@@ -82,7 +85,7 @@ export function PickAssignmentForm() {
   // ── When SKU changes: load pallets
   const loadPallets = useCallback(async (skuId: string) => {
     if (!skuId || !selectedDN) return;
-    setLoading(true); setPallets([]); setPickRows({}); setSearchPallet(""); setSearchGRN("");
+    setLoading(true); setPallets([]); setPickRows({}); setSearchPallet(""); setSearchGRN(""); setSearchBatch(""); setSearchMfg(""); setSearchExpiry("");
     try {
       const d = await fetch(`/api/pick-assignment/data?dnId=${encodeURIComponent(selectedDN)}&skuId=${encodeURIComponent(skuId)}`).then(r => r.json());
       const ps: Pallet[] = (d.pallets || []).map((p: Pallet, idx: number) => ({
@@ -106,8 +109,14 @@ export function PickAssignmentForm() {
   const filteredPallets = pallets.filter(p => {
     const pm = !searchPallet || p.Pallet_ID.toLowerCase().includes(searchPallet.toLowerCase());
     const gm = !searchGRN || p.GRN_ID.toLowerCase().includes(searchGRN.toLowerCase());
-    return pm && gm;
+    const bm = !searchBatch || p.Batch_Number.toLowerCase().includes(searchBatch.toLowerCase());
+    const mm = !searchMfg || p.Manufacturing_Date.toLowerCase().includes(searchMfg.toLowerCase());
+    const em = !searchExpiry || p.Expiry_Date.toLowerCase().includes(searchExpiry.toLowerCase());
+    return pm && gm && bm && mm && em;
   });
+
+  const hasAnyFilter = searchPallet || searchGRN || searchBatch || searchMfg || searchExpiry;
+  const clearAllFilters = () => { setSearchPallet(""); setSearchGRN(""); setSearchBatch(""); setSearchMfg(""); setSearchExpiry(""); };
 
   // ── Per-pallet total picks (shared across all rows of same Pallet_ID)
   const palletPickTotalMap: Record<string, number> = {};
@@ -336,16 +345,31 @@ export function PickAssignmentForm() {
                   <div className="relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
                     <Input placeholder="Pallet ID..." value={searchPallet} onChange={e => setSearchPallet(e.target.value)}
-                      className="h-8 pl-7 pr-3 text-xs w-40 font-mono" />
+                      className="h-8 pl-7 pr-3 text-xs w-36 font-mono" />
                   </div>
                   <div className="relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
                     <Input placeholder="GRN ID..." value={searchGRN} onChange={e => setSearchGRN(e.target.value)}
-                      className="h-8 pl-7 pr-3 text-xs w-36 font-mono" />
+                      className="h-8 pl-7 pr-3 text-xs w-32 font-mono" />
                   </div>
-                  {(searchPallet || searchGRN) && (
-                    <button onClick={() => { setSearchPallet(""); setSearchGRN(""); }}
-                      className="text-xs text-muted-foreground hover:text-foreground underline">Clear</button>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
+                    <Input placeholder="Batch..." value={searchBatch} onChange={e => setSearchBatch(e.target.value)}
+                      className="h-8 pl-7 pr-3 text-xs w-28 font-mono" />
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
+                    <Input placeholder="Mfg Date..." value={searchMfg} onChange={e => setSearchMfg(e.target.value)}
+                      className="h-8 pl-7 pr-3 text-xs w-28 font-mono" />
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">🔍</span>
+                    <Input placeholder="Expiry..." value={searchExpiry} onChange={e => setSearchExpiry(e.target.value)}
+                      className="h-8 pl-7 pr-3 text-xs w-28 font-mono" />
+                  </div>
+                  {hasAnyFilter && (
+                    <button onClick={clearAllFilters}
+                      className="text-xs text-muted-foreground hover:text-foreground underline whitespace-nowrap">Clear all</button>
                   )}
                 </>
               )}
@@ -384,7 +408,8 @@ export function PickAssignmentForm() {
                     <th className="px-3 py-3 text-right w-28 whitespace-nowrap">Pick Dmg</th>
                     <th className="px-3 py-3 text-right whitespace-nowrap">Pick Total</th>
                     <th className="px-3 py-3 text-right whitespace-nowrap" title="Pallet_Total_Qty − all picks from this pallet">Closing Pallet</th>
-                    <th className="px-3 py-3 text-right whitespace-nowrap" title="SKU count on this pallet"># SKUs on Pallet</th>
+                    <th className="px-3 py-3 text-right whitespace-nowrap" title="Order_Qty − total picked so far for this SKU">Closing SKU</th>
+                    <th className="px-3 py-3 text-right whitespace-nowrap" title="SKU count on this pallet"># SKUs</th>
                     <th className="px-3 py-3 text-center whitespace-nowrap">Last?</th>
                   </tr>
                 </thead>
@@ -441,10 +466,17 @@ export function PickAssignmentForm() {
                           </div>
                         </td>
                         <td className={`px-3 py-2.5 text-right font-mono text-sm font-bold ${hasAnyPick ? "text-green-700" : "text-muted-foreground"}`}>{pickTotal}</td>
+                        {/* Closing Pallet */}
                         <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${closingPallet === 0 && hasAnyPick ? "text-orange-500" : ""}`}>
                           {closingPallet}
                           <span className="block text-[10px] text-muted-foreground font-normal">of {p.Pallet_Total_Qty}</span>
                         </td>
+                        {/* Closing SKU — same for every row since it's SKU-level */}
+                        <td className={`px-3 py-2.5 text-right font-mono text-xs font-semibold ${closingOfSKU === 0 ? "text-green-600" : closingOfSKU < 0 ? "text-red-600" : "text-amber-600"}`}>
+                          {closingOfSKU}
+                          <span className="block text-[10px] text-muted-foreground font-normal">of {orderQty}</span>
+                        </td>
+                        {/* SKU count on pallet */}
                         <td className="px-3 py-2.5 text-center font-mono text-xs font-semibold text-purple-700">
                           {p.SKU_Count_In_Pallet}
                           <span className="block text-[10px] text-muted-foreground font-normal">SKU{p.SKU_Count_In_Pallet !== 1 ? "s" : ""}</span>
@@ -464,7 +496,8 @@ export function PickAssignmentForm() {
                     <td className="px-3 py-3 text-right font-mono text-sm text-green-700">{totalPickedGood}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm text-orange-600">{totalPickedDamage}</td>
                     <td className="px-3 py-3 text-right font-mono text-sm font-bold text-primary">{totalPicked}</td>
-                    <td className="px-3 py-3 text-right font-mono text-sm text-red-500">{closingOfSKU}</td>
+                    <td className="px-3 py-3 text-right font-mono text-sm text-muted-foreground">—</td>
+                    <td className={`px-3 py-3 text-right font-mono text-sm font-bold ${closingOfSKU === 0 ? "text-green-600" : "text-amber-600"}`}>{closingOfSKU}</td>
                     <td></td><td></td>
                   </tr>
                 </tfoot>
