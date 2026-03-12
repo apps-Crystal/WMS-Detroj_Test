@@ -916,12 +916,6 @@ function mergePallets(data) {
         invSheet.getRange(matched.rowIdx + 1, 8).setValue(newGood);    // Good_Box_Qty
         invSheet.getRange(matched.rowIdx + 1, 9).setValue(newDamage);  // Damage_Box_Qty
         invSheet.getRange(matched.rowIdx + 1, 10).setValue(newCurrent);// Current_Qty
-        // Also recalculate Free_Good, Free_Damage, Free_Total (col 13,14,15 = 1-indexed)
-        const resGood = parseFloat(matched.data[10]) || 0;
-        const resDmg = parseFloat(matched.data[11]) || 0;
-        invSheet.getRange(matched.rowIdx + 1, 13).setValue(Math.max(0, newGood - resGood));
-        invSheet.getRange(matched.rowIdx + 1, 14).setValue(Math.max(0, newDamage - resDmg));
-        invSheet.getRange(matched.rowIdx + 1, 15).setValue(Math.max(0, newGood - resGood) + Math.max(0, newDamage - resDmg));
         // Update in-memory so further matches in this loop are correct
         matched.data[7] = newGood; matched.data[8] = newDamage; matched.data[9] = newCurrent;
         log.push("Merged SKU " + src.data[2] + " (Good:+" + moveGood + ", Dmg:+" + moveDmg + ") into " + dstId);
@@ -934,10 +928,8 @@ function mergePallets(data) {
         newRow[9] = newCurrentMove;
         newRow[10] = 0; // Reserved Good = 0
         newRow[11] = 0; // Reserved Dmg = 0
-        newRow[12] = moveGood; // Free Good
-        newRow[13] = moveDmg;  // Free Dmg
-        newRow[14] = newCurrentMove; // Free Total
-        invSheet.appendRow(newRow);
+        // Truncate to 12 columns so we don't overwrite Free_* columns (indices 12, 13, 14)
+        invSheet.appendRow(newRow.slice(0, 12));
         // Add to activeDst so it can be matched by subsequent source rows if needed
         activeDst.push({ rowIdx: -1, data: newRow }); // rowIdx -1 = newly added, skip deletion safety
         log.push("Added new SKU row " + src.data[2] + " to " + dstId + " (Qty: " + newCurrentMove + ")");
@@ -959,9 +951,6 @@ function mergePallets(data) {
         invSheet.getRange(src.rowIdx + 1, 8).setValue(remGood);
         invSheet.getRange(src.rowIdx + 1, 9).setValue(remDmg);
         invSheet.getRange(src.rowIdx + 1, 10).setValue(remCurr);
-        invSheet.getRange(src.rowIdx + 1, 13).setValue(Math.max(0, remGood - resGoodSrc));
-        invSheet.getRange(src.rowIdx + 1, 14).setValue(Math.max(0, remDmg - resDmgSrc));
-        invSheet.getRange(src.rowIdx + 1, 15).setValue(Math.max(0, remGood - resGoodSrc) + Math.max(0, remDmg - resDmgSrc));
         log.push("Partially moved SKU " + src.data[2] + ". Remaining on Source: " + remCurr);
       }
     });
