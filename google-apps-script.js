@@ -820,7 +820,7 @@ function getPalletDetails(palletId) {
   const rows = [];
   for (let i = 1; i < invData.length; i++) {
     if (String(invData[i][0] || "").trim() !== String(palletId).trim()) continue;
-    
+
     const curQty = parseFloat(invData[i][9]) || 0;
     if (curQty <= 0) continue; // Skip rows with 0 Current_Qty
 
@@ -892,8 +892,8 @@ function mergePallets(data) {
     const rowsToDelete = [];
     srcRows.forEach(function (src, srcIndex) {
       const moveGood = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveGood) || 0) : (parseFloat(src.data[7]) || 0);
-      const moveDmg  = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveDmg)  || 0) : (parseFloat(src.data[8]) || 0);
-      
+      const moveDmg = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveDmg) || 0) : (parseFloat(src.data[8]) || 0);
+
       if (moveGood <= 0 && moveDmg <= 0) return; // Skip if nothing to move
 
       // Match key: GRN_ID(1), SKU_ID(2), SKU_Description(3), Batch_Number(4), Mfg_Date(5), Expiry_Date(6)
@@ -945,13 +945,13 @@ function mergePallets(data) {
 
       // ── STEP 4a: Update or Mark Source row for deletion
       const srcGood = parseFloat(src.data[7]) || 0;
-      const srcDmg  = parseFloat(src.data[8]) || 0;
+      const srcDmg = parseFloat(src.data[8]) || 0;
       const remGood = Math.max(0, srcGood - moveGood);
-      const remDmg  = Math.max(0, srcDmg - moveDmg);
+      const remDmg = Math.max(0, srcDmg - moveDmg);
       const remCurr = remGood + remDmg;
-      
+
       const resGoodSrc = parseFloat(src.data[10]) || 0;
-      const resDmgSrc  = parseFloat(src.data[11]) || 0;
+      const resDmgSrc = parseFloat(src.data[11]) || 0;
 
       if (remGood === 0 && remDmg === 0 && resGoodSrc === 0 && resDmgSrc === 0) {
         rowsToDelete.push(src.rowIdx);
@@ -974,36 +974,51 @@ function mergePallets(data) {
     });
 
     // ── STEP 5: Update Destination status & Check if source pallet has any remaining rows
+    SpreadsheetApp.flush(); // ensure all deletions/appends are committed
     const refreshed = invSheet.getDataRange().getValues();
     let srcStillHasRows = false;
     for (let i = 1; i < refreshed.length; i++) {
-      if (String(refreshed[i][0] || "").trim() === srcId) { srcStillHasRows = true; break; }
+      if (String(refreshed[i][0] || "").trim() === srcId) {
+        // Only count rows that have actual quantity or are reserved
+        const g = parseFloat(refreshed[i][7]) || 0;
+        const d = parseFloat(refreshed[i][8]) || 0;
+        const rg = parseFloat(refreshed[i][10]) || 0;
+        const rd = parseFloat(refreshed[i][11]) || 0;
+        if (g > 0 || d > 0 || rg > 0 || rd > 0) {
+          srcStillHasRows = true;
+          break;
+        }
+      }
     }
 
     if (stsSheet) {
       const stsData = stsSheet.getDataRange().getValues();
       let dstUpdated = false, srcUpdated = false;
-      
+
       for (let i = 1; i < stsData.length; i++) {
         const rowPalletId = String(stsData[i][0] || "").trim();
-        
+
         // Mark Destination as Occupied
         if (rowPalletId === dstId) {
           stsSheet.getRange(i + 1, 2).setValue("✅ Occupied"); // Occupancy_Status col B
-          log.push("Destination pallet " + dstId + " marked as Occupied in Pallet_Status_02");
+          log.push("Destination pallet " + dstId + " marked as ✅ Occupied");
           dstUpdated = true;
         }
 
-        // Mark Source as Unoccupied if entirely depleted
-        if (rowPalletId === srcId && !srcStillHasRows) {
-          stsSheet.getRange(i + 1, 2).setValue("❌ Unoccupied"); // Occupancy_Status col B
-          stsSheet.getRange(i + 1, 3).setValue("");                  // Location_ID col C
-          stsSheet.getRange(i + 1, 4).setValue("");                  // Assignment_Status col D
-          log.push("Source pallet " + srcId + " fully depleted and marked as Unoccupied in Pallet_Status_02");
+        // Mark Source as Unoccupied ONLY if entirely depleted
+        if (rowPalletId === srcId) {
+          if (!srcStillHasRows) {
+            stsSheet.getRange(i + 1, 2).setValue("❌ Unoccupied"); // Occupancy_Status col B
+            stsSheet.getRange(i + 1, 3).setValue("");                  // Location_ID col C
+            stsSheet.getRange(i + 1, 4).setValue("");                  // Assignment_Status col D
+            log.push("Source pallet " + srcId + " is now empty. Status set to ❌ Unoccupied");
+          } else {
+            log.push("Source pallet " + srcId + " still has inventory. Status unchanged.");
+          }
           srcUpdated = true;
         }
-        
-        if (dstUpdated && (srcUpdated || srcStillHasRows)) break;
+
+        if (dstUpdated && srcUpdated) break;
       }
     }
 
