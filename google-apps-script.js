@@ -885,18 +885,19 @@ function mergePallets(data) {
     if (srcRows.length === 0) return jsonResponse({ status: "error", message: "Source pallet '" + srcId + "' has no inventory rows" });
 
     const log = [];
-    // Make a mutable copy of dstRows for in-loop matching
     const activeDst = dstRows.slice();
-
-    // ── STEP 2 & 3: For each source row, match or create in destination
     const rowsToDelete = [];
+    
+    // Tracks changes to be written in bulk at the end
+    // Key: rowIdx, Value: [col8, col9, col10]
+    const dataToUpdate = {};
+
     srcRows.forEach(function (src, srcIndex) {
       const moveGood = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveGood) || 0) : (parseFloat(src.data[7]) || 0);
       const moveDmg = (data.moves && data.moves[srcIndex]) ? (parseFloat(data.moves[srcIndex].moveDmg) || 0) : (parseFloat(src.data[8]) || 0);
 
-      if (moveGood <= 0 && moveDmg <= 0) return; // Skip if nothing to move
+      if (moveGood <= 0 && moveDmg <= 0) return;
 
-      // Match key: GRN_ID(1), SKU_ID(2), SKU_Description(3), Batch_Number(4), Mfg_Date(5), Expiry_Date(6)
       const keyOf = function (row) {
         return [row[1], row[2], row[3], row[4], String(row[5]), String(row[6])].map(function (v) { return String(v || '').trim(); }).join('||');
       };
@@ -909,105 +910,81 @@ function mergePallets(data) {
       const newCurrentMove = moveGood + moveDmg;
 
       if (matched) {
-        // ── STEP 2: Matching SKU → add quantities into destination row
+        // MATCHING SKU
         const newGood = (parseFloat(matched.data[7]) || 0) + moveGood;
         const newDamage = (parseFloat(matched.data[8]) || 0) + moveDmg;
         const newCurrent = (parseFloat(matched.data[9]) || 0) + newCurrentMove;
-        invSheet.getRange(matched.rowIdx + 1, 8).setValue(newGood);    // Good_Box_Qty
-        invSheet.getRange(matched.rowIdx + 1, 9).setValue(newDamage);  // Damage_Box_Qty
-        invSheet.getRange(matched.rowIdx + 1, 10).setValue(newCurrent);// Current_Qty
-        // Update in-memory so further matches in this loop are correct
+        
+        dataToUpdate[matched.rowIdx] = [newGood, newDamage, newCurrent];
+        
         matched.data[7] = newGood; matched.data[8] = newDamage; matched.data[9] = newCurrent;
         log.push("Merged SKU " + src.data[2] + " (Good:+" + moveGood + ", Dmg:+" + moveDmg + ") into " + dstId);
       } else {
-        // ── STEP 3: No matching SKU → create new row in destination
+        // NEW SKU
         var newRow = src.data.slice();
-        newRow[0] = dstId; // Change Pallet_ID to destination
+        newRow[0] = dstId;
         newRow[7] = moveGood;
         newRow[8] = moveDmg;
         newRow[9] = newCurrentMove;
-        newRow[10] = 0; // Reserved Good = 0
-        newRow[11] = 0; // Reserved Dmg = 0
-        // Truncate to 12 columns so we don't overwrite Free_* columns (indices 12, 13, 14)
+        newRow[10] = 0; // Reserved Good
+        newRow[11] = 0; // Reserved Dmg
         invSheet.appendRow(newRow.slice(0, 12));
-        // Add to activeDst so it can be matched by subsequent source rows if needed
-        activeDst.push({ rowIdx: -1, data: newRow }); // rowIdx -1 = newly added, skip deletion safety
+        activeDst.push({ rowIdx: -1, data: newRow });
         log.push("Added new SKU row " + src.data[2] + " to " + dstId + " (Qty: " + newCurrentMove + ")");
       }
 
-      // ── STEP 4a: Update or Mark Source row for deletion
-      const srcGood = parseFloat(src.data[7]) || 0;
-      const srcDmg = parseFloat(src.data[8]) || 0;
-      const remGood = Math.max(0, srcGood - moveGood);
-      const remDmg = Math.max(0, srcDmg - moveDmg);
+      // SOURCE UPDATE
+      const remGood = Math.max(0, (parseFloat(src.data[7]) || 0) - moveGood);
+      const remDmg  = Math.max(0, (parseFloat(src.data[8]) || 0) - moveDmg);
       const remCurr = remGood + remDmg;
+      const hasRes  = (parseFloat(src.data[10]) || 0) > 0 || (parseFloat(src.data[11]) || 0) > 0;
 
-      const resGoodSrc = parseFloat(src.data[10]) || 0;
-      const resDmgSrc = parseFloat(src.data[11]) || 0;
-
-      if (remGood === 0 && remDmg === 0 && resGoodSrc === 0 && resDmgSrc === 0) {
+      if (remCurr === 0 && !hasRes) {
         rowsToDelete.push(src.rowIdx);
       } else {
-        invSheet.getRange(src.rowIdx + 1, 8).setValue(remGood);
-        invSheet.getRange(src.rowIdx + 1, 9).setValue(remDmg);
-        invSheet.getRange(src.rowIdx + 1, 10).setValue(remCurr);
+        dataToUpdate[src.rowIdx] = [remGood, remDmg, remCurr];
         log.push("Partially moved SKU " + src.data[2] + ". Remaining on Source: " + remCurr);
       }
     });
 
-    // ── STEP 4b: Delete source rows in reverse order to preserve sheet indices
-    const srcIndices = rowsToDelete.sort(function (a, b) { return b - a; });
-    srcIndices.forEach(function (ri) {
-      invSheet.deleteRow(ri + 1); // convert 0-based to 1-based sheet row
-      log.push("Deleted fully depleted source row (index " + (ri + 1) + ") from Pallet_Inventory_01");
+    // BATCH UPDATE INVENTORY QUANTITIES
+    Object.keys(dataToUpdate).forEach(function(rowIdx) {
+      const idx = parseInt(rowIdx);
+      invSheet.getRange(idx + 1, 8, 1, 3).setValues([dataToUpdate[rowIdx]]);
     });
 
-    // ── STEP 5: Update Destination status & Check if source pallet has any remaining rows
-    SpreadsheetApp.flush(); // ensure all deletions/appends are committed
+    // DELETE SOURCE ROWS
+    const srcIndices = rowsToDelete.sort(function (a, b) { return b - a; });
+    srcIndices.forEach(function (ri) {
+      invSheet.deleteRow(ri + 1);
+      log.push("Deleted fully depleted source row from Pallet_Inventory_01");
+    });
+
+    // STATUS UPDATES
+    SpreadsheetApp.flush();
     const refreshed = invSheet.getDataRange().getValues();
-    let srcStillHasRows = false;
-    for (let i = 1; i < refreshed.length; i++) {
-      if (String(refreshed[i][0] || "").trim() === srcId) {
-        // Only count rows that have actual quantity or are reserved
-        const g = parseFloat(refreshed[i][7]) || 0;
-        const d = parseFloat(refreshed[i][8]) || 0;
-        const rg = parseFloat(refreshed[i][10]) || 0;
-        const rd = parseFloat(refreshed[i][11]) || 0;
-        if (g > 0 || d > 0 || rg > 0 || rd > 0) {
-          srcStillHasRows = true;
-          break;
-        }
-      }
-    }
+    let srcStillHasRows = refreshed.some(function(r) {
+      if (String(r[0]).trim() !== srcId) return false;
+      return (parseFloat(r[7])||0) > 0 || (parseFloat(r[8])||0) > 0 || (parseFloat(r[10])||0) > 0 || (parseFloat(r[11])||0) > 0;
+    });
 
     if (stsSheet) {
-      const stsData = stsSheet.getDataRange().getValues();
-      let dstUpdated = false, srcUpdated = false;
-
-      for (let i = 1; i < stsData.length; i++) {
-        const rowPalletId = String(stsData[i][0] || "").trim();
-
-        // Mark Destination as Occupied
-        if (rowPalletId === dstId) {
-          stsSheet.getRange(i + 1, 2).setValue("✅ Occupied"); // Occupancy_Status col B
-          log.push("Destination pallet " + dstId + " marked as ✅ Occupied");
-          dstUpdated = true;
+      const stsRange = stsSheet.getDataRange();
+      const stsValues = stsRange.getValues();
+      for (let i = 1; i < stsValues.length; i++) {
+        const rowId = String(stsValues[i][0]).trim();
+        if (rowId === dstId) {
+          stsSheet.getRange(i + 1, 2).setValue("✅ Occupied");
+          log.push("Destination " + dstId + " set to ✅ Occupied");
         }
-
-        // Mark Source as Unoccupied ONLY if entirely depleted
-        if (rowPalletId === srcId) {
+        if (rowId === srcId) {
           if (!srcStillHasRows) {
-            stsSheet.getRange(i + 1, 2).setValue("❌ Unoccupied"); // Occupancy_Status col B
-            stsSheet.getRange(i + 1, 3).setValue("");                  // Location_ID col C
-            stsSheet.getRange(i + 1, 4).setValue("");                  // Assignment_Status col D
-            log.push("Source pallet " + srcId + " is now empty. Status set to ❌ Unoccupied");
+            stsSheet.getRange(i + 1, 2, 1, 3).setValues([["❌ Unoccupied", "", ""]]);
+            log.push("Source " + srcId + " set to ❌ Unoccupied");
           } else {
-            log.push("Source pallet " + srcId + " still has inventory. Status unchanged.");
+            log.push("Source " + srcId + " status unchanged (has inventory)");
           }
-          srcUpdated = true;
         }
-
-        if (dstUpdated && srcUpdated) break;
       }
     }
 
