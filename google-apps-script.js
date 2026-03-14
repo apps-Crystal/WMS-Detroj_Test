@@ -358,25 +358,8 @@ function submitPalletBuild(data) {
     data.Wrapping || "",
     data.Photos_URL || "",
     data.Remarks || "",
-    data.Vehicle_Completed ? "Yes" : "No"
+    data.Vehicle_Completed ? true : false
   ]);
-
-  // 2. Update GRN_Entry_IB_01 Status
-  const grnSheet = ss.getSheetByName("GRN_Entry_IB_01");
-  if (grnSheet) {
-    const grnValues = grnSheet.getDataRange().getValues();
-    for (let i = 1; i < grnValues.length; i++) {
-      if (String(grnValues[i][0]).trim() === String(data.GRN_ID).trim()) {
-        const currentStatus = String(grnValues[i][13]).trim();
-        if (data.Vehicle_Completed) {
-          grnSheet.getRange(i + 1, 14).setValue("Unloading Completed");
-        } else if (currentStatus === "Vehicle Docked") {
-          grnSheet.getRange(i + 1, 14).setValue("Unloading in Progress");
-        }
-        break;
-      }
-    }
-  }
 
   return jsonResponse({ status: "success" });
 }
@@ -392,9 +375,9 @@ function submitPalletBuildBulk(data) {
   if (data.pallets && Array.isArray(data.pallets)) {
     const totalPallets = data.pallets.length;
     data.pallets.forEach((p, index) => {
-      // Only mark the LAST pallet in this batch as "Yes" if Vehicle_Completed is checked
+      // Only mark the LAST pallet in this batch as TRUE if Vehicle_Completed is checked
       const isLastInBatch = index === totalPallets - 1;
-      const vehicleCompletedForThisRow = (data.Vehicle_Completed && isLastInBatch) ? "Yes" : "No";
+      const vehicleCompletedForThisRow = (data.Vehicle_Completed && isLastInBatch) ? true : false;
 
       pbSheet.appendRow([
         p.GRN_ID,
@@ -418,23 +401,6 @@ function submitPalletBuildBulk(data) {
         vehicleCompletedForThisRow
       ]);
     });
-  }
-
-  // 2. Update GRN_Entry_IB_01 Status
-  const grnSheet = ss.getSheetByName("GRN_Entry_IB_01");
-  if (grnSheet) {
-    const grnValues = grnSheet.getDataRange().getValues();
-    for (let i = 1; i < grnValues.length; i++) {
-      if (String(grnValues[i][0]).trim() === String(data.GRN_ID).trim()) {
-        const currentStatus = String(grnValues[i][13]).trim();
-        if (data.Vehicle_Completed) {
-          grnSheet.getRange(i + 1, 14).setValue("Unloading Completed");
-        } else if (currentStatus === "Vehicle Docked") {
-          grnSheet.getRange(i + 1, 14).setValue("Unloading in Progress");
-        }
-        break;
-      }
-    }
   }
 
   return jsonResponse({ status: "success" });
@@ -887,7 +853,7 @@ function mergePallets(data) {
     const log = [];
     const activeDst = dstRows.slice();
     const rowsToDelete = [];
-    
+
     // Tracks changes to be written in bulk at the end
     // Key: rowIdx, Value: [col8, col9, col10]
     const dataToUpdate = {};
@@ -914,9 +880,9 @@ function mergePallets(data) {
         const newGood = (parseFloat(matched.data[7]) || 0) + moveGood;
         const newDamage = (parseFloat(matched.data[8]) || 0) + moveDmg;
         const newCurrent = (parseFloat(matched.data[9]) || 0) + newCurrentMove;
-        
+
         dataToUpdate[matched.rowIdx] = [newGood, newDamage, newCurrent];
-        
+
         matched.data[7] = newGood; matched.data[8] = newDamage; matched.data[9] = newCurrent;
         log.push("Merged SKU " + src.data[2] + " (Good:+" + moveGood + ", Dmg:+" + moveDmg + ") into " + dstId);
       } else {
@@ -935,9 +901,9 @@ function mergePallets(data) {
 
       // SOURCE UPDATE
       const remGood = Math.max(0, (parseFloat(src.data[7]) || 0) - moveGood);
-      const remDmg  = Math.max(0, (parseFloat(src.data[8]) || 0) - moveDmg);
+      const remDmg = Math.max(0, (parseFloat(src.data[8]) || 0) - moveDmg);
       const remCurr = remGood + remDmg;
-      const hasRes  = (parseFloat(src.data[10]) || 0) > 0 || (parseFloat(src.data[11]) || 0) > 0;
+      const hasRes = (parseFloat(src.data[10]) || 0) > 0 || (parseFloat(src.data[11]) || 0) > 0;
 
       if (remCurr === 0 && !hasRes) {
         rowsToDelete.push(src.rowIdx);
@@ -948,7 +914,7 @@ function mergePallets(data) {
     });
 
     // BATCH UPDATE INVENTORY QUANTITIES
-    Object.keys(dataToUpdate).forEach(function(rowIdx) {
+    Object.keys(dataToUpdate).forEach(function (rowIdx) {
       const idx = parseInt(rowIdx);
       invSheet.getRange(idx + 1, 8, 1, 3).setValues([dataToUpdate[rowIdx]]);
     });
@@ -963,9 +929,9 @@ function mergePallets(data) {
     // STATUS UPDATES
     SpreadsheetApp.flush();
     const refreshed = invSheet.getDataRange().getValues();
-    let srcStillHasRows = refreshed.some(function(r) {
+    let srcStillHasRows = refreshed.some(function (r) {
       if (String(r[0]).trim() !== srcId) return false;
-      return (parseFloat(r[7])||0) > 0 || (parseFloat(r[8])||0) > 0 || (parseFloat(r[10])||0) > 0 || (parseFloat(r[11])||0) > 0;
+      return (parseFloat(r[7]) || 0) > 0 || (parseFloat(r[8]) || 0) > 0 || (parseFloat(r[10]) || 0) > 0 || (parseFloat(r[11]) || 0) > 0;
     });
 
     if (stsSheet) {
