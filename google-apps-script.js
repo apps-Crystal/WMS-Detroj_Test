@@ -294,18 +294,6 @@ function submitVehicleChecklist(data) {
     data.Dock_No || "",
   ]);
 
-  // 2. Update GRN_Entry_IB_01 Status → "Vehicle Docked"
-  const grnSheet = ss.getSheetByName("GRN_Entry_IB_01");
-  if (grnSheet) {
-    const values = grnSheet.getDataRange().getValues();
-    for (let i = 1; i < values.length; i++) {
-      if (String(values[i][0]).trim() === String(data.GRN_ID).trim()) {
-        grnSheet.getRange(i + 1, 14).setValue("Vehicle Docked"); // Column N = Status
-        break;
-      }
-    }
-  }
-
   return jsonResponse({ status: "success" });
 }
 
@@ -451,18 +439,6 @@ function submitPutaway(data) {
     data.Is_Putaway_Sent || "No"
   ]);
 
-  // 2. Update GRN_Entry_IB_01 Status
-  const grnSheet = ss.getSheetByName("GRN_Entry_IB_01");
-  if (grnSheet && data.GRN_ID) {
-    const grnValues = grnSheet.getDataRange().getValues();
-    for (let i = 1; i < grnValues.length; i++) {
-      if (String(grnValues[i][0]).trim() === String(data.GRN_ID).trim()) {
-        grnSheet.getRange(i + 1, 14).setValue("Putaway Completed"); // Update status 
-        break;
-      }
-    }
-  }
-
   return jsonResponse({ status: "success" });
 }
 
@@ -482,18 +458,6 @@ function submitGrnIssue(data) {
     data.Remarks || "",
     data.GRN_Issued || "Yes"
   ]);
-
-  // 2. (Optional) Update GRN_Entry_IB_01 Status?
-  const grnSheet = ss.getSheetByName("GRN_Entry_IB_01");
-  if (grnSheet) {
-    const grnValues = grnSheet.getDataRange().getValues();
-    for (let i = 1; i < grnValues.length; i++) {
-      if (String(grnValues[i][0]).trim() === String(data.GRN_ID).trim()) {
-        grnSheet.getRange(i + 1, 14).setValue("GRN Issued"); // Update status 
-        break;
-      }
-    }
-  }
 
   return jsonResponse({ status: "success" });
 }
