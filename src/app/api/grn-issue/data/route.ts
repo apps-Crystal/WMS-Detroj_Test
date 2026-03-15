@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "14iW26B06PFTKr3nmdYT_3RmjqjGRww7J8atnU0rYiHA";
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1kk5OR00fIrdt8dPJ3GhkkFnjs6tsJ93yEfG9zl2kzYg";
 
 async function fetchGViz(sheetName: string, query: string = "select *") {
   const gvizUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${sheetName}&tq=${encodeURIComponent(query)}`;

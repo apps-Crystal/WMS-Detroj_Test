@@ -8,7 +8,7 @@
 // Copy the URL and paste it into .env.local as APPS_SCRIPT_URL
 // ============================================================
 
-const SPREADSHEET_ID = "14iW26B06PFTKr3nmdYT_3RmjqjGRww7J8atnU0rYiHA";
+const SPREADSHEET_ID = "1kk5OR00fIrdt8dPJ3GhkkFnjs6tsJ93yEfG9zl2kzYg";
 
 function doGet(e) {
   const action = e.parameter.action;

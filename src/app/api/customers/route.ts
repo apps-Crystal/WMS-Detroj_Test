@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "14iW26B06PFTKr3nmdYT_3RmjqjGRww7J8atnU0rYiHA";
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1kk5OR00fIrdt8dPJ3GhkkFnjs6tsJ93yEfG9zl2kzYg";
 
 // Force dynamic so Next.js never caches this route
 export const dynamic = 'force-dynamic';
